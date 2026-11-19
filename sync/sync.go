@@ -22,12 +22,14 @@ const batchSize = 3
 
 // Summary counts the outcome of a sync run.
 type Summary struct {
-	New      int
-	Skipped  int
-	Assumed  int
-	Failed   int
-	Locked   int
-	Chapters int
+	New         int      // pages downloaded
+	Skipped     int      // pages that were already present
+	Assumed     int      // chapters skipped by the bookmark's cutoff
+	Synced      int      // chapters skipped because they were fully synced
+	Failed      int      // pages or chapters that failed
+	Locked      int      // locked chapters
+	Chapters    int      // chapters considered
+	NewChapters []string // chapters that received at least one new page
 }
 
 // Add accumulates another summary.
@@ -35,17 +37,67 @@ func (s *Summary) Add(o Summary) {
 	s.New += o.New
 	s.Skipped += o.Skipped
 	s.Assumed += o.Assumed
+	s.Synced += o.Synced
 	s.Failed += o.Failed
 	s.Locked += o.Locked
 	s.Chapters += o.Chapters
+	s.NewChapters = append(s.NewChapters, o.NewChapters...)
 }
 
-// Text renders the summary line.
+// Text renders the summary line for the whole run. Chapter ranges only make
+// sense within one series, so the aggregate line reports counts instead.
 func (s *Summary) Text() string {
-	return fmt.Sprintf(
-		"+%d new, %d unchanged, %d assumed, %d locked, %d failed, %d chapters",
-		s.New, s.Skipped, s.Assumed, s.Locked, s.Failed, s.Chapters,
-	)
+	parts := []string{s.head(false)}
+	return strings.Join(append(parts, s.details()...), ", ")
+}
+
+// Note renders the summary of one bookmark, including the downloaded chapter
+// range (for example "Chapter 122-125").
+func (s *Summary) Note() string {
+	parts := []string{s.head(true)}
+	return strings.Join(append(parts, s.details()...), ", ")
+}
+
+func (s *Summary) head(withRange bool) string {
+	if len(s.NewChapters) == 0 {
+		if s.New == 0 {
+			return "no new pages"
+		}
+		return fmt.Sprintf("+%d %s", s.New, plural(s.New, "page", "pages"))
+	}
+	chapters := fmt.Sprintf("%d %s", len(s.NewChapters), plural(len(s.NewChapters), "chapter", "chapters"))
+	if withRange {
+		return fmt.Sprintf("+%s (%s), %d %s",
+			chapters, discover.ChapterRangeLabel(s.NewChapters), s.New, plural(s.New, "page", "pages"))
+	}
+	return fmt.Sprintf("+%s (%d %s)", chapters, s.New, plural(s.New, "page", "pages"))
+}
+
+func (s *Summary) details() []string {
+	var parts []string
+	if s.Skipped > 0 {
+		parts = append(parts, fmt.Sprintf("%d %s unchanged", s.Skipped, plural(s.Skipped, "page", "pages")))
+	}
+	if s.Assumed > 0 {
+		parts = append(parts, fmt.Sprintf("%d %s assumed", s.Assumed, plural(s.Assumed, "chapter", "chapters")))
+	}
+	if s.Synced > 0 {
+		parts = append(parts, fmt.Sprintf("%d %s up to date", s.Synced, plural(s.Synced, "chapter", "chapters")))
+	}
+	if s.Locked > 0 {
+		parts = append(parts, fmt.Sprintf("%d locked", s.Locked))
+	}
+	if s.Failed > 0 {
+		parts = append(parts, fmt.Sprintf("%d failed", s.Failed))
+	}
+	return parts
+}
+
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
 }
 
 // AddSeries registers a series URL as a bookmark.
@@ -249,6 +301,16 @@ func SyncSeries(
 		}
 	}
 
+	// Chapters that were completely downloaded before are not fetched during
+	// indexing. --verify re-indexes everything to catch changed pages.
+	var syncedChapters map[string]bool
+	if !verify {
+		syncedChapters, err = st.SyncedChapters(slug)
+		if err != nil {
+			return summary, err
+		}
+	}
+
 	// Without verification, pages already in the database are skipped locally.
 	// They are not part of the download work, so keep them out of the bar total.
 	needsSynced := !verify || dryRun
@@ -274,6 +336,14 @@ func SyncSeries(
 			discover.ChapterAtOrBefore(ref.Number, bookmark.AssumeSyncedThrough) {
 			slog.Debug("chapter assumed synced", "bookmark", slug, "chapter", ref.Number)
 			summary.Assumed++
+			summary.Chapters++
+			indexBar.Add(1)
+			continue
+		}
+
+		if syncedChapters[ref.Number] {
+			slog.Debug("chapter up to date", "bookmark", slug, "chapter", ref.Number)
+			summary.Synced++
 			summary.Chapters++
 			indexBar.Add(1)
 			continue
@@ -308,7 +378,7 @@ func SyncSeries(
 		summary.Chapters++
 
 		if chapter.Locked {
-			if err := st.SetChapter(slug, ref.Number, chapterURL, "locked", 0); err != nil {
+			if err := st.SetChapter(slug, ref.Number, chapterURL, state.ChapterStatusLocked, 0); err != nil {
 				slog.Error("state update failed", "bookmark", slug, "chapter", ref.Number, "error", err)
 			}
 			summary.Locked++
@@ -327,6 +397,21 @@ func SyncSeries(
 		} else {
 			plan.pending = len(chapter.Pages)
 		}
+
+		// Everything is already in the database. Remember it so later runs can
+		// skip this chapter page entirely.
+		if needsSynced && plan.pending == 0 && len(chapter.Pages) > 0 {
+			if !dryRun {
+				if err := st.SetChapter(slug, ref.Number, chapterURL, state.ChapterStatusSynced, len(chapter.Pages)); err != nil {
+					slog.Error("state update failed", "bookmark", slug, "chapter", ref.Number, "error", err)
+				}
+			}
+			slog.Debug("chapter up to date", "bookmark", slug, "chapter", ref.Number)
+			summary.Synced++
+			indexBar.Add(1)
+			continue
+		}
+
 		pendingTotal += plan.pending
 		plans = append(plans, plan)
 		indexBar.Add(1)
@@ -350,11 +435,12 @@ func SyncSeries(
 		chapter := plan.chapter
 		bar.SetDetail(discover.ChapterLabel(ref.Number))
 
-		if err := st.SetChapter(slug, ref.Number, chapter.URL, "ok", len(chapter.Pages)); err != nil {
+		if err := st.SetChapter(slug, ref.Number, chapter.URL, state.ChapterStatusOK, len(chapter.Pages)); err != nil {
 			slog.Error("state update failed", "bookmark", slug, "chapter", ref.Number, "error", err)
 		}
 		chapterDir := filepath.Join(outRoot, discover.ChapterLabel(ref.Number))
 
+		handled, chapterFailed, chapterNew := 0, 0, 0
 		for start := 0; start < len(chapter.Pages); start += batchSize {
 			if limit != nil && *limit <= 0 {
 				break
@@ -369,10 +455,12 @@ func SyncSeries(
 			}
 
 			results := syncPages(f, st, slug, ref.Number, chunk, chapterDir, dryRun, verify)
+			handled += len(results)
 			for _, result := range results {
 				switch result {
 				case "new":
 					summary.New++
+					chapterNew++
 					if limit != nil {
 						*limit--
 					}
@@ -380,10 +468,25 @@ func SyncSeries(
 					summary.Skipped++
 				default:
 					summary.Failed++
+					chapterFailed++
 				}
 				if !needsSynced || result != "skipped" {
 					bar.Add(1)
 				}
+			}
+		}
+
+		if chapterNew > 0 {
+			summary.NewChapters = append(summary.NewChapters, ref.Number)
+		}
+
+		// Remember a chapter as fully synced only when every page was handled
+		// and none failed (a download limit or an error leaves it pending).
+		if !dryRun && chapterFailed == 0 && handled == len(chapter.Pages) && len(chapter.Pages) > 0 {
+			if err := st.SetChapter(slug, ref.Number, chapter.URL, state.ChapterStatusSynced, len(chapter.Pages)); err != nil {
+				slog.Error("state update failed", "bookmark", slug, "chapter", ref.Number, "error", err)
+			} else {
+				slog.Debug("chapter synced", "bookmark", slug, "chapter", ref.Number, "pages", len(chapter.Pages))
 			}
 		}
 	}
@@ -594,7 +697,7 @@ func SyncAll(
 		} else {
 			totals.Add(summary)
 			newPages, skipped, failed, locked = summary.New, summary.Skipped, summary.Failed, summary.Locked
-			note = summary.Text()
+			note = summary.Note()
 			if summary.Failed > 0 {
 				result = "partial"
 				failures = append(failures, b.Slug)

@@ -12,6 +12,14 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+// Chapter status values stored in the chapters table.
+const (
+	ChapterStatusPending = "pending"
+	ChapterStatusOK      = "ok"
+	ChapterStatusSynced  = "synced"
+	ChapterStatusLocked  = "locked"
+)
+
 // State wraps the SQLite state database.
 type State struct {
 	db *sql.DB
@@ -446,6 +454,28 @@ func (s *State) EnsureChapter(slug, number string, pageCount int) error {
 	return err
 }
 
+// SyncedChapters returns the chapter numbers that are fully downloaded, so a
+// run can skip fetching and indexing them.
+func (s *State) SyncedChapters(slug string) (map[string]bool, error) {
+	rows, err := s.db.Query(
+		`SELECT number FROM chapters WHERE slug = ? AND status = ?`,
+		slug, ChapterStatusSynced,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var number string
+		if err := rows.Scan(&number); err != nil {
+			return nil, err
+		}
+		out[number] = true
+	}
+	return out, rows.Err()
+}
+
 // AllChaptersForBookmark returns all known chapter numbers (from the chapters
 // table and from synced pages), sorted ascending.
 func (s *State) AllChaptersForBookmark(slug string) ([]string, error) {
@@ -606,6 +636,17 @@ func (s *State) UnsyncChapters(slug string, chapters []string) (int64, error) {
 		args...,
 	)
 	if err != nil {
+		return 0, err
+	}
+	// Force the next run to index these chapters again instead of skipping
+	// them as fully synced.
+	updateArgs := make([]any, 0, len(args)+1)
+	updateArgs = append(updateArgs, ChapterStatusPending)
+	updateArgs = append(updateArgs, args...)
+	if _, err := s.db.Exec(
+		`UPDATE chapters SET status = ? WHERE slug = ? AND number IN (`+placeholders(len(chapters))+`)`,
+		updateArgs...,
+	); err != nil {
 		return 0, err
 	}
 	return res.RowsAffected()

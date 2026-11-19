@@ -166,6 +166,68 @@ func ChapterLabel(number string) string {
 	return "Chapter " + number
 }
 
+// ChapterRangeLabel formats chapter numbers as compact labels:
+// ["001","002","003","005"] -> "Chapter 001-003, 005".
+func ChapterRangeLabel(nums []string) string {
+	if len(nums) == 0 {
+		return ""
+	}
+	sorted := append([]string(nil), nums...)
+	SortChapters(sorted)
+
+	unique := sorted[:0]
+	for _, number := range sorted {
+		if len(unique) == 0 || unique[len(unique)-1] != number {
+			unique = append(unique, number)
+		}
+	}
+
+	parts := make([]string, 0, len(unique))
+	for i := 0; i < len(unique); {
+		start, ok := chapterInt(unique[i])
+		if !ok {
+			parts = append(parts, chapterBody(unique[i]))
+			i++
+			continue
+		}
+		end := start
+		j := i
+		for j+1 < len(unique) {
+			next, ok := chapterInt(unique[j+1])
+			if !ok || next != end+1 {
+				break
+			}
+			end = next
+			j++
+		}
+		if j > i {
+			parts = append(parts, fmt.Sprintf("%03d-%03d", start, end))
+			i = j + 1
+			continue
+		}
+		parts = append(parts, chapterBody(unique[i]))
+		i++
+	}
+	return "Chapter " + strings.Join(parts, ", ")
+}
+
+// chapterBody is the chapter number as shown after the "Chapter " prefix.
+func chapterBody(number string) string {
+	if f, err := strconv.ParseFloat(number, 64); err == nil && f == math.Trunc(f) {
+		return fmt.Sprintf("%03d", int64(f))
+	}
+	return number
+}
+
+// chapterInt returns the chapter number as an int when it is a whole number.
+func chapterInt(number string) (int, bool) {
+	f, err := strconv.ParseFloat(number, 64)
+	if err != nil || f != math.Trunc(f) {
+		return 0, false
+	}
+	return int(f), true
+}
+
 // ChapterLess orders chapters numerically.
 func ChapterLess(a, b string) bool {
 	fa, ea := strconv.ParseFloat(a, 64)

@@ -73,6 +73,18 @@ automatically when stderr is redirected, when `TERM=dumb`, or when
 Per-chapter indexing details are only logged with `imgsync run --verbose` (or
 the global `-v` flag).
 
+## Run summary
+
+Each bookmark reports the chapters it downloaded, followed by a total line:
+
+```
+msg=synced bookmark=myst-might-mayhem-7ba78ec7 note="+4 chapters (Chapter 122-125), 71 pages, 121 chapters assumed"
+done: +4 chapters (71 pages), 291 pages unchanged, 121 chapters assumed
+```
+
+"assumed" counts chapters trusted through `assume-synced`; "up to date" counts
+chapters whose pages were already completely in the database.
+
 ## Where files go
 
 New chapters download to the bookmark's `location` when set, otherwise to the
@@ -104,13 +116,18 @@ their stored page paths are updated automatically.
 ## Database is the single source of truth
 
 A page is considered synced when `state.sqlite` has a row for it, or when its
-chapter is at or below the bookmark's assumed cutoff. Otherwise the tool does
-not care whether the file still exists or where it was moved.
+chapter is at or below the bookmark's assumed cutoff. A chapter is considered
+synced once all of its pages have rows. Otherwise the tool does not care
+whether the file still exists or where it was moved.
 
 - Moved or deleted files are **not** re-downloaded.
+- Fully synced chapters are skipped during indexing, so later runs do not even
+  fetch their chapter page. Use `imgsync run --verify` to re-index everything
+  and re-check pages with conditional GETs.
 - `imgsync unsync <slug> [chapter...]` deletes the synced rows for one or all
-  chapters of a bookmark; the next `imgsync run` downloads them again (into the
-  bookmark's current location/output folder).
+  chapters of a bookmark and marks them for indexing again; the next
+  `imgsync run` downloads them again (into the bookmark's current
+  location/output folder).
 - `imgsync set-location <id|slug> <path>` points a bookmark at a folder that
   already contains downloaded chapters. It scans `Chapter NNN` folders, records
   the pages it finds in the DB, and reports:
@@ -154,6 +171,8 @@ ImgSync create a fresh database; the old file is never modified automatically.
 - Chapter pages embed their page lists; on Asura sites the Astro
   `ChapterReader` props are used, otherwise images are collected in document
   order (`<img src>`, `srcset`, image links).
+- Chapters whose pages are all in the DB are marked synced and skipped during
+  indexing; their chapter page is not fetched again.
 - Pages the DB marks as synced are skipped without a request (unless
   `--verify`, which sends a conditional GET).
 - Chapters reported as premium/locked are recorded and retried on the next run.

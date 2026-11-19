@@ -28,17 +28,44 @@ func TestPendingPages(t *testing.T) {
 	}
 }
 
+func TestSummaryText(t *testing.T) {
+	s := Summary{
+		New:         71,
+		Assumed:     121,
+		Chapters:    125,
+		NewChapters: []string{"122", "123", "124", "125"},
+	}
+	if got, want := s.Note(), "+4 chapters (Chapter 122-125), 71 pages, 121 chapters assumed"; got != want {
+		t.Errorf("Note() = %q, want %q", got, want)
+	}
+	if got, want := s.Text(), "+4 chapters (71 pages), 121 chapters assumed"; got != want {
+		t.Errorf("Text() = %q, want %q", got, want)
+	}
+
+	empty := Summary{Assumed: 121, Synced: 4, Chapters: 125}
+	if got, want := empty.Note(), "no new pages, 121 chapters assumed, 4 chapters up to date"; got != want {
+		t.Errorf("empty Note() = %q, want %q", got, want)
+	}
+
+	failed := Summary{New: 1, NewChapters: []string{"125"}, Skipped: 2, Failed: 3, Locked: 1}
+	if got, want := failed.Note(), "+1 chapter (Chapter 125), 1 page, 2 pages unchanged, 1 locked, 3 failed"; got != want {
+		t.Errorf("failed Note() = %q, want %q", got, want)
+	}
+}
+
 func TestSyncSeriesIncremental(t *testing.T) {
 	progress.SetEnabled(false)
 
-	var imageRequests atomic.Int64
+	var chapterRequests, imageRequests atomic.Int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/series/test":
 			_, _ = w.Write([]byte(`<a href="/chapter/1">Chapter 1</a><a href="/chapter/2">Chapter 2</a>`))
 		case "/chapter/1":
+			chapterRequests.Add(1)
 			_, _ = w.Write([]byte(`<img src="/img/1-1.png"><img src="/img/1-2.png">`))
 		case "/chapter/2":
+			chapterRequests.Add(1)
 			_, _ = w.Write([]byte(`<img src="/img/2-1.png"><img src="/img/2-2.png">`))
 		default:
 			imageRequests.Add(1)
@@ -64,11 +91,15 @@ func TestSyncSeriesIncremental(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if summary.New != 4 || summary.Skipped != 0 || summary.Failed != 0 || summary.Chapters != 2 {
+	if summary.New != 4 || summary.Skipped != 0 || summary.Synced != 0 || summary.Failed != 0 ||
+		summary.Chapters != 2 || len(summary.NewChapters) != 2 {
 		t.Fatalf("first run summary = %+v", summary)
 	}
 	if got := imageRequests.Load(); got != 4 {
 		t.Fatalf("image requests = %d, want 4", got)
+	}
+	if got := chapterRequests.Load(); got != 2 {
+		t.Fatalf("chapter requests = %d, want 2", got)
 	}
 	for _, name := range []string{"001.png", "002.png"} {
 		if _, err := os.Stat(filepath.Join(out, "Chapter 001", name)); err != nil {
@@ -80,11 +111,68 @@ func TestSyncSeriesIncremental(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if summary.New != 0 || summary.Skipped != 4 || summary.Chapters != 2 {
+	if summary.New != 0 || summary.Skipped != 0 || summary.Synced != 2 ||
+		summary.Chapters != 2 || len(summary.NewChapters) != 0 {
 		t.Fatalf("second run summary = %+v", summary)
 	}
 	if got := imageRequests.Load(); got != 4 {
 		t.Fatalf("image requests after second run = %d, want 4", got)
+	}
+	if got := chapterRequests.Load(); got != 2 {
+		t.Fatalf("chapter requests after second run = %d, want 2 (synced chapters must be skipped)", got)
+	}
+}
+
+func TestSyncSeriesUnsyncReindexesChapter(t *testing.T) {
+	progress.SetEnabled(false)
+
+	var chapterRequests, imageRequests atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/series/test":
+			_, _ = w.Write([]byte(`<a href="/chapter/1">Chapter 1</a><a href="/chapter/2">Chapter 2</a>`))
+		case "/chapter/1", "/chapter/2":
+			chapterRequests.Add(1)
+			_, _ = w.Write([]byte(`<img src="/img/` + r.URL.Path[len("/chapter/"):] + `.png">`))
+		default:
+			imageRequests.Add(1)
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write([]byte("img"))
+		}
+	}))
+	defer srv.Close()
+
+	st, err := state.Open(filepath.Join(t.TempDir(), "state.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	f := fetch.New()
+	defer f.Close()
+
+	bookmark := state.Bookmark{Slug: "test", URL: srv.URL + "/series/test"}
+	out := t.TempDir()
+
+	if _, err := SyncSeries(f, st, bookmark, out, false, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.UnsyncChapters("test", []string{"001"}); err != nil {
+		t.Fatal(err)
+	}
+
+	summary, err := SyncSeries(f, st, bookmark, out, false, false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.New != 1 || summary.Synced != 1 || len(summary.NewChapters) != 1 || summary.NewChapters[0] != "001" {
+		t.Fatalf("summary after unsync = %+v", summary)
+	}
+	if got := chapterRequests.Load(); got != 3 {
+		t.Fatalf("chapter requests = %d, want 3 (chapter 1 re-indexed, chapter 2 skipped)", got)
+	}
+	if got := imageRequests.Load(); got != 3 {
+		t.Fatalf("image requests = %d, want 3 (only the unsynced chapter re-downloads)", got)
 	}
 }
 
@@ -357,7 +445,14 @@ func TestSyncSeriesLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if summary.New != 1 || summary.Chapters != 1 {
+	if summary.New != 1 || summary.Chapters != 1 || summary.Synced != 0 {
 		t.Fatalf("limit summary = %+v, want 1 new page in 1 chapter", summary)
+	}
+	synced, err := st.SyncedChapters("test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if synced["001"] {
+		t.Fatal("a partially downloaded chapter must not be marked synced")
 	}
 }

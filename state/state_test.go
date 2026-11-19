@@ -97,6 +97,45 @@ func TestIntegrateAndUnsync(t *testing.T) {
 	}
 }
 
+func TestSyncedChaptersAndUnsyncReset(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "state.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	if _, err := st.UpsertBookmark("x-abc123", "abc123", "https://site/comics/x-abc123", "X"); err != nil {
+		t.Fatal(err)
+	}
+	for _, number := range []string{"001", "002"} {
+		if err := st.SetChapter("x-abc123", number, "url", ChapterStatusSynced, 2); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := st.SetChapter("x-abc123", "003", "url", ChapterStatusOK, 2); err != nil {
+		t.Fatal(err)
+	}
+
+	synced, err := st.SyncedChapters("x-abc123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !synced["001"] || !synced["002"] || synced["003"] || len(synced) != 2 {
+		t.Fatalf("synced chapters = %v", synced)
+	}
+
+	if _, err := st.UnsyncChapters("x-abc123", []string{"001"}); err != nil {
+		t.Fatal(err)
+	}
+	synced, err = st.SyncedChapters("x-abc123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if synced["001"] || !synced["002"] || len(synced) != 1 {
+		t.Fatalf("synced chapters after unsync = %v", synced)
+	}
+}
+
 func TestAssumeSynced(t *testing.T) {
 	st, err := Open(filepath.Join(t.TempDir(), "state.sqlite"))
 	if err != nil {

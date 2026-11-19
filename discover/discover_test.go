@@ -115,6 +115,26 @@ func TestChapterLabel(t *testing.T) {
 	}
 }
 
+func TestChapterRangeLabel(t *testing.T) {
+	cases := []struct {
+		nums []string
+		want string
+	}{
+		{nil, ""},
+		{[]string{"125"}, "Chapter 125"},
+		{[]string{"122", "123", "124", "125"}, "Chapter 122-125"},
+		{[]string{"003", "001", "002"}, "Chapter 001-003"},
+		{[]string{"001", "002", "004", "005", "006"}, "Chapter 001-002, 004-006"},
+		{[]string{"12.5", "013"}, "Chapter 12.5, 013"},
+		{[]string{"001", "001", "002"}, "Chapter 001-002"},
+	}
+	for _, tc := range cases {
+		if got := ChapterRangeLabel(tc.nums); got != tc.want {
+			t.Errorf("ChapterRangeLabel(%v) = %q, want %q", tc.nums, got, tc.want)
+		}
+	}
+}
+
 func TestNormalizeChapter(t *testing.T) {
 	cases := map[string]string{
 		"1":           "001",
