@@ -6,16 +6,22 @@ what has been synced.
 
 ## Install
 
+Install from this directory: 
+
+```
+go install
+```
+
 Build from this directory:
 
 ```sh
-go build -o imgsync .
+go build -o  dist/
 ```
 
 Optionally put the binary on your PATH:
 
 ```sh
-ln -s "$PWD/imgsync" ~/.local/bin/imgsync
+ln -s "$PWD/dist/imgsync" ~/.local/bin/imgsync
 ```
 
 ## Usage
@@ -36,12 +42,27 @@ imgsync run --series <slug>                  # only one bookmark
 imgsync run --dry-run                        # show what would be downloaded
 imgsync run --verify                         # conditional GET for db-synced pages
 imgsync run --limit 10                       # max 10 new pages per bookmark
+imgsync run --no-progress                    # hide the progress bar
 ```
+
+## Progress
+
+On interactive terminals `imgsync run` shows a live progress bar on stderr,
+first while indexing chapter pages and then while downloading:
+
+```
+blade of the discarded  [███████░░░░░░░░░░░░░░░░░]  31%  62/200 pages  3.1/s  ETA 1:24
+```
+
+The ETA is based on the work known after indexing, so already-synced pages
+(which are skipped without a request) do not distort it. The bar is disabled
+automatically when stderr is redirected, when `TERM=dumb`, or when
+`IMGSYNC_NO_PROGRESS=1` is set; `--no-progress` turns it off per run.
 
 ## Where files go
 
 New chapters download to the bookmark's `location` when set, otherwise to the
-global output folder (default `~/Pictures/test`, override with
+global output folder (default `~/Downloads/Images`, override with
 `imgsync set-output <dir>` or `IMGSYNC_OUTPUT`).
 
 Layout:
@@ -53,13 +74,18 @@ Layout:
 Example:
 
 ```
-~/Pictures/ImgSync/blade of the discarded/chapter 001/001.webp
+~/Pictures/ImgSync/The Genius Knight of a Fallen Race/Chapter 001/001.webp
 ```
 
-Series folders and chapter labels are derived from the URL slug: the trailing
-site-id hash is stripped and dashes become spaces
-(`blade-of-the-discarded-7ba78ec7` → `blade of the discarded`, chapters
-`chapter 001`, `chapter 12.5`).
+Series folders use the series title as shown on the site, keeping its
+capitalization. When no title is known, the slug is used with the trailing
+site-id hash stripped and dashes converted to spaces
+(`blade-of-the-discarded-7ba78ec7` → `blade of the discarded`). Chapter labels
+are always derived from the chapter number (`Chapter 001`, `Chapter 12.5`).
+
+Folders created by older versions from the lowercase slug or with lowercase
+`chapter NNN` labels are renamed to the canonical names on the next run, and
+their stored page paths are updated automatically.
 
 ## Database is the single source of truth
 
@@ -71,7 +97,7 @@ not care whether the file still exists or where it was moved.
   chapters of a bookmark; the next `imgsync run` downloads them again (into the
   bookmark's current location/output folder).
 - `imgsync set-location <slug> <path>` points a bookmark at a folder that
-  already contains downloaded chapters. It scans `chapter NNN` folders, records
+  already contains downloaded chapters. It scans `Chapter NNN` folders, records
   the pages it finds in the DB, and reports:
 
   - chapters and pages found on disk
@@ -100,8 +126,3 @@ ImgSync create a fresh database; the old file is never modified automatically.
 - Downloads go to `*.part`, are hashed (SHA-256) and renamed atomically.
 - Requests use browser headers and HTTP/2, 3 concurrent connections, 300 ms
   spacing, retry/backoff on 429/5xx, and honor `Retry-After`.
-
-## Notes
-
-Downloaded content is copyrighted. Keep the job rate-limited, use it for
-personal archival only, and stop if the site asks you to.

@@ -36,6 +36,8 @@ var (
 
 	chapterFolderRe = regexp.MustCompile(`(?i)^chapter[\s_-]+([0-9]+(?:\.[0-9]+)?)\s*$`)
 	pageFileRe      = regexp.MustCompile(`^(\d+)\.([A-Za-z0-9]+)$`)
+
+	folderUnsafeRe = regexp.MustCompile(`[<>:"/\\|?*\x00-\x1f]`)
 )
 
 var imageExtensions = map[string]bool{
@@ -81,14 +83,34 @@ func ParseSeriesURL(raw string) (canonical, slug string, err error) {
 	return u.Scheme + "://" + u.Host + p, m[1], nil
 }
 
-// SeriesFolder is the on-disk folder name: trailing site-id hash stripped and
-// dashes converted to spaces.
+// SeriesFolder is the slug-derived fallback folder name: trailing site-id hash
+// stripped and dashes converted to spaces.
 func SeriesFolder(slug string) string {
 	s := hashSuffixRe.ReplaceAllString(slug, "")
 	if s == "" {
 		s = slug
 	}
 	return strings.ReplaceAll(s, "-", " ")
+}
+
+// SeriesFolderName is the on-disk folder for a series. It keeps the title's
+// original capitalization and falls back to the slug-derived name when the
+// title is empty or unusable.
+func SeriesFolderName(title, slug string) string {
+	if name := sanitizeFolderName(title); name != "" {
+		return name
+	}
+	return SeriesFolder(slug)
+}
+
+func sanitizeFolderName(title string) string {
+	name := folderUnsafeRe.ReplaceAllString(title, " ")
+	name = strings.Join(strings.Fields(name), " ")
+	name = strings.Trim(name, " .")
+	if name == "" || name == "." || name == ".." {
+		return ""
+	}
+	return name
 }
 
 // SeriesID returns the trailing site hash of a slug, or "" when absent.
@@ -135,13 +157,13 @@ func NormalizeChapter(s string) string {
 	return s
 }
 
-// ChapterLabel is the chapter folder name: "chapter 001", "chapter 12.5".
+// ChapterLabel is the chapter folder name: "Chapter 001", "Chapter 12.5".
 func ChapterLabel(number string) string {
 	f, err := strconv.ParseFloat(number, 64)
 	if err == nil && f == math.Trunc(f) {
-		return fmt.Sprintf("chapter %03d", int64(f))
+		return fmt.Sprintf("Chapter %03d", int64(f))
 	}
-	return "chapter " + number
+	return "Chapter " + number
 }
 
 // ChapterLess orders chapters numerically.

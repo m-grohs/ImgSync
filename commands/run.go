@@ -8,6 +8,7 @@ import (
 
 	"imgsync/config"
 	"imgsync/fetch"
+	"imgsync/progress"
 	"imgsync/state"
 	"imgsync/sync"
 )
@@ -21,8 +22,12 @@ func Run(args []string) int {
 	dryRun := fs.Bool("dry-run", false, "show what would download")
 	verify := fs.Bool("verify", false, "conditional GET for pages the db marks synced")
 	limit := fs.Int("limit", -1, "stop after N new pages per bookmark")
+	noProgress := fs.Bool("no-progress", false, "hide the progress bar")
 	if _, err := parseArgs(fs, args); err != nil {
 		return 2
+	}
+	if *noProgress {
+		progress.SetEnabled(false)
 	}
 
 	var limitPtr *int

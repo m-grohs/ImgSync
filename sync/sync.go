@@ -8,11 +8,13 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	stdsync "sync"
 
 	"imgsync/config"
 	"imgsync/discover"
 	"imgsync/fetch"
+	"imgsync/progress"
 	"imgsync/state"
 )
 
@@ -177,6 +179,42 @@ func syncPages(
 	return out
 }
 
+// chapterPlan is a parsed chapter whose pages still need processing.
+type chapterPlan struct {
+	ref     discover.ChapterRef
+	chapter *discover.Chapter
+	pending int
+}
+
+// syncedIndexes groups the synced page indexes of a bookmark by chapter.
+func syncedIndexes(st *state.State, slug string) (map[string]map[int]bool, error) {
+	pages, err := st.PagesForBookmark(slug)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]map[int]bool, len(pages))
+	for _, p := range pages {
+		indexes := out[p.Chapter]
+		if indexes == nil {
+			indexes = map[int]bool{}
+			out[p.Chapter] = indexes
+		}
+		indexes[p.Index] = true
+	}
+	return out, nil
+}
+
+// pendingPages counts pages that have no synced row yet.
+func pendingPages(pages []discover.Page, synced map[int]bool) int {
+	n := 0
+	for _, page := range pages {
+		if !synced[page.Index] {
+			n++
+		}
+	}
+	return n
+}
+
 // SyncSeries syncs one bookmark. outRoot is the bookmark location or the
 // global output folder.
 func SyncSeries(
@@ -199,8 +237,29 @@ func SyncSeries(
 		return summary, fmt.Errorf("no chapters found - the site layout may have changed")
 	}
 
+	// Without verification, pages already in the database are skipped locally.
+	// They are not part of the download work, so keep them out of the bar total.
+	needsSynced := !verify || dryRun
+	var synced map[string]map[int]bool
+	if needsSynced {
+		synced, err = syncedIndexes(st, slug)
+		if err != nil {
+			return summary, err
+		}
+	}
+
+	// Pass 1: index chapter pages and collect their page lists. This performs
+	// the same chapter requests as the old single-pass loop and gives the
+	// download bar an exact total.
+	var plans []chapterPlan
+	pendingTotal := 0
+	indexBar := progress.New("indexing "+slug, "chapters", len(chapters))
 	for _, ref := range chapters {
 		if limit != nil && *limit <= 0 {
+			slog.Info("download limit reached", "bookmark", slug)
+			break
+		}
+		if limit != nil && needsSynced && pendingTotal >= *limit {
 			slog.Info("download limit reached", "bookmark", slug)
 			break
 		}
@@ -210,12 +269,14 @@ func SyncSeries(
 		if err != nil {
 			slog.Error("chapter fetch failed", "bookmark", slug, "chapter", ref.Number, "error", err)
 			summary.Failed++
+			indexBar.Add(1)
 			continue
 		}
 		chapter, err := discover.ParseChapter(chapterDoc, ref.Number, chapterURL)
 		if err != nil {
 			slog.Error("chapter parse failed", "bookmark", slug, "chapter", ref.Number, "error", err)
 			summary.Failed++
+			indexBar.Add(1)
 			continue
 		}
 
@@ -231,10 +292,39 @@ func SyncSeries(
 				reason = "unknown"
 			}
 			slog.Info("chapter is locked - retrying next run", "bookmark", slug, "chapter", ref.Number, "reason", reason)
+			indexBar.Add(1)
 			continue
 		}
 
-		if err := st.SetChapter(slug, ref.Number, chapterURL, "ok", len(chapter.Pages)); err != nil {
+		plan := chapterPlan{ref: ref, chapter: chapter}
+		if needsSynced {
+			plan.pending = pendingPages(chapter.Pages, synced[ref.Number])
+		} else {
+			plan.pending = len(chapter.Pages)
+		}
+		pendingTotal += plan.pending
+		plans = append(plans, plan)
+		indexBar.Add(1)
+	}
+	indexBar.Finish()
+
+	total := pendingTotal
+	if limit != nil && needsSynced && total > *limit {
+		total = *limit
+	}
+	bar := progress.New(slug, "pages", total)
+	defer bar.Finish()
+
+	// Pass 2: download the planned pages in small batches.
+	for _, plan := range plans {
+		if limit != nil && *limit <= 0 {
+			slog.Info("download limit reached", "bookmark", slug)
+			break
+		}
+		ref := plan.ref
+		chapter := plan.chapter
+
+		if err := st.SetChapter(slug, ref.Number, chapter.URL, "ok", len(chapter.Pages)); err != nil {
 			slog.Error("state update failed", "bookmark", slug, "chapter", ref.Number, "error", err)
 		}
 		chapterDir := filepath.Join(outRoot, discover.ChapterLabel(ref.Number))
@@ -265,11 +355,147 @@ func SyncSeries(
 				default:
 					summary.Failed++
 				}
+				if !needsSynced || result != "skipped" {
+					bar.Add(1)
+				}
 			}
 		}
 	}
 
 	return summary, nil
+}
+
+func isDir(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
+}
+
+// relinkPagePaths updates stored page paths after a series folder is renamed.
+func relinkPagePaths(st *state.State, slug, oldRoot, newRoot string) error {
+	return relinkRenamedPaths(st, slug, map[string]string{oldRoot: newRoot})
+}
+
+// relinkRenamedPaths rewrites stored page paths for every renamed folder.
+func relinkRenamedPaths(st *state.State, slug string, renamed map[string]string) error {
+	pages, err := st.PagesForBookmark(slug)
+	if err != nil {
+		return err
+	}
+	sep := string(os.PathSeparator)
+	for _, p := range pages {
+		if p.Path == "" {
+			continue
+		}
+		for oldRoot, newRoot := range renamed {
+			oldPrefix := oldRoot + sep
+			if !strings.HasPrefix(p.Path, oldPrefix) {
+				continue
+			}
+			next := newRoot + sep + strings.TrimPrefix(p.Path, oldPrefix)
+			if err := st.SetPagePath(slug, p.Chapter, p.Index, next); err != nil {
+				return err
+			}
+			break
+		}
+	}
+	return nil
+}
+
+// seriesOutRoot is the download folder for a bookmark without an explicit
+// location. Folders created by older versions from the lowercase URL slug are
+// renamed to the title-based name once, so downloads stay in one folder.
+func seriesOutRoot(st *state.State, b state.Bookmark, dryRun bool) string {
+	base := config.OutputDir()
+	target := filepath.Join(base, discover.SeriesFolderName(b.Title, b.Slug))
+	legacy := filepath.Join(base, discover.SeriesFolder(b.Slug))
+	if target == legacy {
+		return target
+	}
+
+	targetExists := isDir(target)
+	legacyExists := isDir(legacy)
+	switch {
+	case !targetExists && legacyExists:
+		if dryRun {
+			return legacy
+		}
+		if err := os.Rename(legacy, target); err != nil {
+			slog.Warn(
+				"cannot rename series folder to title - keeping the existing folder",
+				"bookmark", b.Slug, "from", legacy, "to", target, "error", err,
+			)
+			return legacy
+		}
+		if err := relinkPagePaths(st, b.Slug, legacy, target); err != nil {
+			slog.Warn("series folder renamed but stored page paths were not updated", "bookmark", b.Slug, "error", err)
+		} else {
+			slog.Info("series folder renamed to title", "bookmark", b.Slug, "from", legacy, "to", target)
+		}
+	case targetExists && legacyExists:
+		slog.Warn(
+			"both title-based and slug-based series folders exist - using the title-based one",
+			"bookmark", b.Slug, "title_folder", target, "slug_folder", legacy,
+		)
+	}
+	return target
+}
+
+// normalizeChapterFolders renames legacy lowercase chapter folders to the
+// canonical "Chapter NNN" form and updates their stored page paths.
+func normalizeChapterFolders(st *state.State, slug, outRoot string, dryRun bool) error {
+	entries, err := os.ReadDir(outRoot)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+
+	renamed := map[string]string{}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		number, ok := discover.ParseChapterFolderName(entry.Name())
+		if !ok {
+			continue
+		}
+		canonical := discover.ChapterLabel(number)
+		if entry.Name() == canonical {
+			continue
+		}
+
+		oldDir := filepath.Join(outRoot, entry.Name())
+		newDir := filepath.Join(outRoot, canonical)
+		if newInfo, err := os.Stat(newDir); err == nil {
+			oldInfo, statErr := os.Stat(oldDir)
+			if statErr != nil || !os.SameFile(newInfo, oldInfo) {
+				slog.Warn(
+					"both legacy and canonical chapter folders exist - keeping both",
+					"bookmark", slug, "legacy_folder", oldDir, "canonical_folder", newDir,
+				)
+				continue
+			}
+		}
+
+		if dryRun {
+			slog.Info("would rename chapter folder", "bookmark", slug, "from", oldDir, "to", newDir)
+			continue
+		}
+		if err := os.Rename(oldDir, newDir); err != nil {
+			slog.Warn("cannot rename chapter folder", "bookmark", slug, "from", oldDir, "to", newDir, "error", err)
+			continue
+		}
+		renamed[oldDir] = newDir
+		slog.Info("chapter folder renamed", "bookmark", slug, "from", oldDir, "to", newDir)
+	}
+
+	if len(renamed) > 0 {
+		if err := relinkRenamedPaths(st, slug, renamed); err != nil {
+			slog.Warn("chapter folders renamed but stored page paths were not updated", "bookmark", slug, "error", err)
+		}
+	}
+	return nil
 }
 
 // SyncAll syncs every enabled bookmark (optionally filtered by slug).
@@ -319,7 +545,10 @@ func SyncAll(
 		started := state.Now()
 		outRoot := b.Location
 		if outRoot == "" {
-			outRoot = filepath.Join(config.OutputDir(), discover.SeriesFolder(b.Slug))
+			outRoot = seriesOutRoot(st, b, dryRun)
+		}
+		if err := normalizeChapterFolders(st, b.Slug, outRoot, dryRun); err != nil {
+			slog.Warn("chapter folder migration failed", "bookmark", b.Slug, "error", err)
 		}
 
 		slog.Info("syncing", "bookmark", b.Slug)

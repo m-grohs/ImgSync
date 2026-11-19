@@ -8,6 +8,7 @@ import (
 
 	"imgsync/commands"
 	"imgsync/config"
+	"imgsync/progress"
 )
 
 // Run dispatches the CLI. It returns the process exit code.
@@ -54,9 +55,9 @@ func setupLogging(verbose bool) {
 	if verbose {
 		level = slog.LevelDebug
 	}
-	var w io.Writer = os.Stderr
+	var w io.Writer = progress.Writer(os.Stderr)
 	if f, err := os.OpenFile(config.LogPath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); err == nil {
-		w = io.MultiWriter(os.Stderr, f)
+		w = io.MultiWriter(progress.Writer(os.Stderr), f)
 	}
 	slog.SetDefault(slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: level})))
 }
@@ -71,7 +72,10 @@ Usage:
   imgsync set-output <dir>                    set the folder new chapters download to
   imgsync set-location <slug> <path>          point a bookmark at its folder [--dry-run]
   imgsync unsync <slug> [chapter...]          mark chapter(s) unsynced [--dry-run]
-  imgsync run [--series SLUG] [--dry-run] [--verify] [--limit N]
+  imgsync run [--series SLUG] [--dry-run] [--verify] [--limit N] [--no-progress]
+
+The run command shows a progress bar with an ETA on interactive terminals.
+Set IMGSYNC_NO_PROGRESS=1 or pass --no-progress to hide it.
 
 Global flags:
   -v, --verbose

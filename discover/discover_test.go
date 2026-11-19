@@ -52,6 +52,30 @@ func TestRejectsNonSeriesURL(t *testing.T) {
 	}
 }
 
+func TestSeriesFolderName(t *testing.T) {
+	cases := []struct {
+		title string
+		slug  string
+		want  string
+	}{
+		{
+			"The Genius Knight of a Fallen Race",
+			"the-genius-knight-of-a-fallen-race-7ba78ec7",
+			"The Genius Knight of a Fallen Race",
+		},
+		{"  Spaced   Title  ", "slug", "Spaced Title"},
+		{"Re:Zero - Starting Life", "re-zero", "Re Zero - Starting Life"},
+		{"A/B: C?", "a-b-123456", "A B C"},
+		{"", "blade-of-the-discarded-7ba78ec7", "blade of the discarded"},
+		{" .. ", "blade-of-the-discarded-7ba78ec7", "blade of the discarded"},
+	}
+	for _, tc := range cases {
+		if got := SeriesFolderName(tc.title, tc.slug); got != tc.want {
+			t.Errorf("SeriesFolderName(%q, %q) = %q, want %q", tc.title, tc.slug, got, tc.want)
+		}
+	}
+}
+
 func TestDiscoverChaptersSortedAndDeduped(t *testing.T) {
 	doc := `<a href="/comics/x-abc123/chapter/2"></a>` +
 		`<a href="/comics/x-abc123/chapter/10"></a>` +
@@ -81,8 +105,8 @@ func TestDiscoverChaptersFallbackText(t *testing.T) {
 
 func TestChapterLabel(t *testing.T) {
 	cases := map[string]string{
-		"1":    "chapter 001",
-		"12.5": "chapter 12.5",
+		"1":    "Chapter 001",
+		"12.5": "Chapter 12.5",
 	}
 	for in, want := range cases {
 		if got := ChapterLabel(in); got != want {

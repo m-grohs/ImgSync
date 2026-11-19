@@ -197,7 +197,7 @@ func diskPageAt(scanned map[string][]diskPage, chapter string, index int) (strin
 	return "", false
 }
 
-// scanLocation finds chapter folders ("chapter 001") and page files
+// scanLocation finds chapter folders ("Chapter 001", case-insensitive) and page files
 // ("001.webp") under root.
 func scanLocation(root string) (map[string][]diskPage, error) {
 	entries, err := os.ReadDir(root)
