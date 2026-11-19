@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -26,7 +27,10 @@ var (
 )
 
 func detectEnabled() bool {
-	if os.Getenv("IMGSYNC_NO_PROGRESS") != "" || os.Getenv("TERM") == "dumb" {
+	if noProgressSet() {
+		return false
+	}
+	if os.Getenv("TERM") == "dumb" {
 		return false
 	}
 	info, err := os.Stderr.Stat()
@@ -34,6 +38,21 @@ func detectEnabled() bool {
 		return false
 	}
 	return info.Mode()&os.ModeCharDevice != 0
+}
+
+// noProgressSet reports whether IMGSYNC_NO_PROGRESS is explicitly true.
+// Values like "0" and "false" deliberately keep progress enabled.
+func noProgressSet() bool {
+	v, err := strconv.ParseBool(os.Getenv("IMGSYNC_NO_PROGRESS"))
+	return err == nil && v
+}
+
+// Enabled reports whether bars are currently rendered. Tests use it to save
+// and restore global state.
+func Enabled() bool {
+	mu.Lock()
+	defer mu.Unlock()
+	return enabled
 }
 
 // SetEnabled turns the bar on or off for the rest of the process. It is used

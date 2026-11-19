@@ -47,8 +47,21 @@ func TestParseSeriesURL(t *testing.T) {
 }
 
 func TestRejectsNonSeriesURL(t *testing.T) {
-	if _, _, err := ParseSeriesURL("https://asurascans.com/comics/x/chapter/1"); err == nil {
-		t.Fatal("expected error for chapter URL")
+	for _, raw := range []string{
+		"https://asurascans.com/comics/x/chapter/1",
+		"https://example.com/foo/bar",
+		"https://example.com/",
+	} {
+		if _, _, err := ParseSeriesURL(raw); err == nil {
+			t.Fatalf("expected error for %q", raw)
+		}
+	}
+}
+
+func TestSeriesTitleKeepsHyphens(t *testing.T) {
+	got := SeriesTitle(`<html><head><title>Re:Zero - Starting Life</title></head></html>`)
+	if got != "Re:Zero - Starting Life" {
+		t.Fatalf("SeriesTitle = %q", got)
 	}
 }
 
@@ -100,6 +113,51 @@ func TestDiscoverChaptersFallbackText(t *testing.T) {
 	}
 	if got[0].Number != "001" || got[1].Number != "002" {
 		t.Fatalf("numbers = %+v", got)
+	}
+}
+
+func TestDiscoverChaptersMergesTextFallback(t *testing.T) {
+	doc := `<a href="/comics/x/chapter/1">Chapter 1</a>` +
+		`<a href="/read/thing/2">Chapter 2</a>`
+	got := DiscoverChapters(doc)
+	if len(got) != 2 {
+		t.Fatalf("len = %d, want 2: %+v", len(got), got)
+	}
+	if got[0].Number != "001" || got[1].Number != "002" {
+		t.Fatalf("numbers = %+v", got)
+	}
+}
+
+func TestParseChapterCompactsIndices(t *testing.T) {
+	list := []any{
+		42.0,                                  // not an object
+		map[string]any{"width": 1.0},          // no url
+		testPage,                              // valid
+		map[string]any{"url": []any{0.0, ""}}, // empty url
+		testPage,                              // valid
+	}
+	raw, _ := json.Marshal(map[string]any{"pages": []any{1.0, list}})
+	doc := `<astro-island component-url="/_astro/ChapterReader.x.js" props="` +
+		html.EscapeString(string(raw)) + `"></astro-island>`
+	chapter, err := ParseChapter(doc, "001", "https://site/chapter/1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chapter.Pages) != 2 || chapter.Pages[0].Index != 0 || chapter.Pages[1].Index != 1 {
+		t.Fatalf("pages = %+v", chapter.Pages)
+	}
+}
+
+func TestUnrelatedPropsDoNotBlockImageFallback(t *testing.T) {
+	props := html.EscapeString(`{"pages":"not-an-array","chapterNumber":1}`)
+	doc := `<astro-island component-url="/_astro/Foo.x.js" props="` + props + `"></astro-island>` +
+		`<img src="/img/001.jpg">`
+	chapter, err := ParseChapter(doc, "001", "https://site/chapter/1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chapter.Pages) != 1 || chapter.Pages[0].URL != "https://site/img/001.jpg" {
+		t.Fatalf("pages = %+v", chapter.Pages)
 	}
 }
 
@@ -199,13 +257,13 @@ func TestParseChapterPages(t *testing.T) {
 	}
 }
 
-func TestLockedWhenNoPages(t *testing.T) {
+func TestEmptyWhenNoPages(t *testing.T) {
 	chapter, err := ParseChapter(chapterHTML(0, false), "009", "u")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !chapter.Locked || chapter.Reason != "no pages" {
-		t.Fatalf("locked=%v reason=%q", chapter.Locked, chapter.Reason)
+	if chapter.Locked || !chapter.Empty || chapter.Reason != "no pages" {
+		t.Fatalf("locked=%v empty=%v reason=%q", chapter.Locked, chapter.Empty, chapter.Reason)
 	}
 }
 

@@ -343,6 +343,40 @@ func TestOpenBackfillsBookmarkIDs(t *testing.T) {
 	}
 }
 
+func TestRemoveBookmarkCleansBookkeepingRows(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "state.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	if _, err := st.UpsertBookmark("x-abc123", "abc", "https://site/x-abc123", "X"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AddAssumeException("x-abc123", "001"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.RecordRun("x-abc123", "now", "now", 1, 0, 0, 0, "note"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertPage("x-abc123", "001", 0, "url", "/tmp/001.webp", "", "", "sha", 1); err != nil {
+		t.Fatal(err)
+	}
+	if removed, err := st.RemoveBookmark("x-abc123"); err != nil || !removed {
+		t.Fatalf("removed=%v err=%v", removed, err)
+	}
+
+	var runs int
+	if err := st.db.QueryRow(`SELECT COUNT(*) FROM runs`).Scan(&runs); err != nil || runs != 0 {
+		t.Fatalf("runs = %d, err = %v", runs, err)
+	}
+	// Page rows are kept on purpose: re-adding the series must not re-download.
+	pages, err := st.PagesForBookmark("x-abc123")
+	if err != nil || len(pages) != 1 {
+		t.Fatalf("pages = %+v, err = %v", pages, err)
+	}
+}
+
 func TestUpsertPage(t *testing.T) {
 	st, err := Open(filepath.Join(t.TempDir(), "state.sqlite"))
 	if err != nil {

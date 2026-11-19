@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,7 +9,10 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-const appName = "imgsync"
+const (
+	appName             = "imgsync"
+	defaultOutputFolder = "~/Downloads/Images"
+)
 
 // Config is the on-disk configuration (~/.config/imgsync/config.toml).
 type Config struct {
@@ -30,10 +34,11 @@ func dataDir() string {
 		home, _ := os.UserHomeDir()
 		base = filepath.Join(home, ".local", "share")
 	}
-	dir := filepath.Join(base, appName)
-	_ = os.MkdirAll(dir, 0o755)
-	return dir
+	return filepath.Join(base, appName)
 }
+
+// EnsureDataDir creates the state/log directory on demand.
+func EnsureDataDir() error { return os.MkdirAll(dataDir(), 0o755) }
 
 func configPath() string { return filepath.Join(configDir(), "config.toml") }
 
@@ -43,13 +48,21 @@ func DBPath() string { return filepath.Join(dataDir(), "state.sqlite") }
 // LogPath is the log file.
 func LogPath() string { return filepath.Join(dataDir(), "imgsync.log") }
 
-// Load reads config.toml (empty config when missing).
-func Load() Config {
+// Load reads config.toml. Malformed configuration is an error so a broken
+// file never silently redirects downloads to a different folder.
+func Load() (Config, error) {
 	var cfg Config
-	if data, err := os.ReadFile(configPath()); err == nil {
-		_ = toml.Unmarshal(data, &cfg)
+	data, err := os.ReadFile(configPath())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return cfg, nil
+		}
+		return cfg, err
 	}
-	return cfg
+	if _, err := toml.Decode(string(data), &cfg); err != nil {
+		return Config{}, fmt.Errorf("invalid config %s: %w", configPath(), err)
+	}
+	return cfg, nil
 }
 
 // ExpandPath expands a leading ~ and makes relative paths absolute.
@@ -68,28 +81,34 @@ func ExpandPath(p string) string {
 	return p
 }
 
-// OutputDir is where chapters download when a bookmark has no location.
-func OutputDir() string {
+// OutputDir is where chapters download when a bookmark has no location. It
+// does not create the directory; downloads create folders as they are written.
+func OutputDir() (string, error) {
 	raw := os.Getenv("IMGSYNC_OUTPUT")
 	if raw == "" {
-		raw = Load().Output
+		cfg, err := Load()
+		if err != nil {
+			return "", err
+		}
+		raw = cfg.Output
 	}
 	if raw == "" {
-		raw = "~/Pictures/test"
+		raw = defaultOutputFolder
 	}
-	dir := ExpandPath(raw)
-	_ = os.MkdirAll(dir, 0o755)
-	return dir
+	return ExpandPath(raw), nil
 }
 
 // SetOutput writes the download folder to config.toml and returns its absolute
-// path.
+// path. The config file is replaced atomically.
 func SetOutput(dir string) (string, error) {
 	abs := ExpandPath(dir)
 	if err := os.MkdirAll(abs, 0o755); err != nil {
 		return "", err
 	}
-	cfg := Load()
+	cfg, err := Load()
+	if err != nil {
+		return "", err
+	}
 	cfg.Output = abs
 	var buf strings.Builder
 	if err := toml.NewEncoder(&buf).Encode(cfg); err != nil {
@@ -98,8 +117,31 @@ func SetOutput(dir string) (string, error) {
 	if err := os.MkdirAll(configDir(), 0o755); err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(configPath(), []byte(buf.String()), 0o644); err != nil {
-		return "", err
+	return abs, writeFileAtomic(configPath(), []byte(buf.String()), 0o644)
+}
+
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	fh, err := os.CreateTemp(dir, ".imgsync-config-*")
+	if err != nil {
+		return err
 	}
-	return abs, nil
+	tmp := fh.Name()
+	defer func() { _ = os.Remove(tmp) }()
+	if err := fh.Chmod(perm); err != nil {
+		_ = fh.Close()
+		return err
+	}
+	if _, err := fh.Write(data); err != nil {
+		_ = fh.Close()
+		return err
+	}
+	if err := fh.Sync(); err != nil {
+		_ = fh.Close()
+		return err
+	}
+	if err := fh.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }

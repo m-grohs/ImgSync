@@ -1,6 +1,7 @@
 package discover
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"html"
@@ -8,18 +9,20 @@ import (
 	"net/url"
 	"path"
 	"regexp"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 )
 
 var (
-	seriesRe      = regexp.MustCompile(`^/(?:[^/]+/)?([^/]+)/?$`)
+	seriesRe      = regexp.MustCompile(`(?i)^/(?:comics?|series|manga|read)/([^/]+)/?$`)
+	validSlugRe   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
 	hashSuffixRe  = regexp.MustCompile(`-[0-9a-f]{6,12}$`)
 	ogTitleRe     = regexp.MustCompile(`(?i)<meta[^>]+property="og:title"[^>]+content="([^"]*)"`)
 	titleRe       = regexp.MustCompile(`(?i)<title>([^<]*)</title>`)
-	asuraSuffixRe = regexp.MustCompile(`(?i)\s*\|\s*Asura Scans\s*$`)
+	asuraSuffixRe = regexp.MustCompile(`(?i)\s*[-|–—]\s*Asura Scans\s*$`)
 
+	astroIslandRe = regexp.MustCompile(`(?is)<astro-island\b[^>]*>`)
 	propsRe       = regexp.MustCompile(`props="([^"]*)"`)
 	hrefRe        = regexp.MustCompile(`href="([^"]+)"`)
 	anchorRe      = regexp.MustCompile(`(?is)<a\b[^>]*href="([^"]+)"[^>]*>(.*?)</a>`)
@@ -54,7 +57,8 @@ type Page struct {
 type Chapter struct {
 	Number string
 	URL    string
-	Locked bool
+	Locked bool // premium/locked by the site
+	Empty  bool // page payload was readable but contained no images
 	Reason string
 	Pages  []Page
 }
@@ -77,8 +81,8 @@ func ParseSeriesURL(raw string) (canonical, slug string, err error) {
 	}
 	p := strings.TrimSuffix(u.Path, "/")
 	m := seriesRe.FindStringSubmatch(p)
-	if m == nil {
-		return "", "", fmt.Errorf("not a series URL - expected https://<site>/comics/<series-slug>")
+	if m == nil || !validSlugRe.MatchString(m[1]) {
+		return "", "", fmt.Errorf("not a series URL - expected https://<site>/comics/<series-slug> (or /series/, /manga/)")
 	}
 	return u.Scheme + "://" + u.Host + p, m[1], nil
 }
@@ -132,7 +136,6 @@ func SeriesTitle(doc string) string {
 	}
 	title = strings.TrimSpace(html.UnescapeString(title))
 	title = asuraSuffixRe.ReplaceAllString(title, "")
-	title = strings.ReplaceAll(title, "-", " ")
 	return strings.TrimSpace(title)
 }
 
@@ -228,30 +231,32 @@ func chapterInt(number string) (int, bool) {
 	return int(f), true
 }
 
-// ChapterLess orders chapters numerically.
-func ChapterLess(a, b string) bool {
+// ChapterCompare orders chapters numerically, falling back to lexical order
+// for non-numeric values.
+func ChapterCompare(a, b string) int {
 	fa, ea := strconv.ParseFloat(a, 64)
 	fb, eb := strconv.ParseFloat(b, 64)
-	if ea == nil && eb == nil {
-		return fa < fb
+	if ea == nil && eb == nil && !math.IsNaN(fa) && !math.IsNaN(fb) {
+		return cmp.Compare(fa, fb)
 	}
-	return a < b
+	return cmp.Compare(a, b)
 }
+
+// ChapterLess orders chapters numerically.
+func ChapterLess(a, b string) bool { return ChapterCompare(a, b) < 0 }
 
 // ChapterAtOrBefore reports whether a is less than or equal to b.
 func ChapterAtOrBefore(a, b string) bool {
 	fa, ea := strconv.ParseFloat(a, 64)
 	fb, eb := strconv.ParseFloat(b, 64)
-	if ea == nil && eb == nil {
+	if ea == nil && eb == nil && !math.IsNaN(fa) && !math.IsNaN(fb) {
 		return fa <= fb
 	}
 	return a <= b
 }
 
 // SortChapters sorts chapter numbers ascending.
-func SortChapters(nums []string) {
-	sort.Slice(nums, func(i, j int) bool { return ChapterLess(nums[i], nums[j]) })
-}
+func SortChapters(nums []string) { slices.SortFunc(nums, ChapterCompare) }
 
 // DiscoverChapters returns chapter numbers and paths sorted ascending.
 func DiscoverChapters(doc string) []ChapterRef {
@@ -264,14 +269,14 @@ func DiscoverChapters(doc string) []ChapterRef {
 			}
 		}
 	}
-	if len(byNumber) == 0 {
-		for _, m := range anchorRe.FindAllStringSubmatch(doc, -1) {
-			text := strings.TrimSpace(html.UnescapeString(tagRe.ReplaceAllString(m[2], "")))
-			if cm := chapterTextRe.FindStringSubmatch(text); cm != nil {
-				num := NormalizeChapter(cm[1])
-				if _, ok := byNumber[num]; !ok {
-					byNumber[num] = m[1]
-				}
+	// Merge link-text matches instead of only using them as an all-or-nothing
+	// fallback: a page may mix /chapter/N links with text-only chapter links.
+	for _, m := range anchorRe.FindAllStringSubmatch(doc, -1) {
+		text := strings.TrimSpace(html.UnescapeString(tagRe.ReplaceAllString(m[2], "")))
+		if cm := chapterTextRe.FindStringSubmatch(text); cm != nil {
+			num := NormalizeChapter(cm[1])
+			if _, ok := byNumber[num]; !ok {
+				byNumber[num] = m[1]
 			}
 		}
 	}
@@ -329,21 +334,52 @@ func htmlTitle(doc string) string {
 }
 
 func findChapterData(doc string) map[string]any {
-	for _, m := range propsRe.FindAllStringSubmatch(doc, -1) {
-		var v any
-		if err := json.Unmarshal([]byte(html.UnescapeString(m[1])), &v); err != nil {
+	var fallback map[string]any
+	for _, island := range astroIslandRe.FindAllString(doc, -1) {
+		m := propsRe.FindStringSubmatch(island)
+		if m == nil {
 			continue
 		}
-		if obj, ok := v.(map[string]any); ok {
-			if _, ok := obj["pages"]; ok {
-				return obj
-			}
-			if _, ok := obj["chapterNumber"]; ok {
-				return obj
-			}
+		obj := decodeProps(m[1])
+		if !hasPagesArray(obj) {
+			continue
+		}
+		if strings.Contains(strings.ToLower(island), "chapterreader") {
+			return obj
+		}
+		if fallback == nil {
+			fallback = obj
+		}
+	}
+	if fallback != nil {
+		return fallback
+	}
+	// Older markup may not identify the island; accept any props that contain
+	// a real pages array rather than an unrelated "pages" key.
+	for _, m := range propsRe.FindAllStringSubmatch(doc, -1) {
+		obj := decodeProps(m[1])
+		if hasPagesArray(obj) {
+			return obj
 		}
 	}
 	return nil
+}
+
+func decodeProps(raw string) map[string]any {
+	var v any
+	if err := json.Unmarshal([]byte(html.UnescapeString(raw)), &v); err != nil {
+		return nil
+	}
+	obj, _ := v.(map[string]any)
+	return obj
+}
+
+func hasPagesArray(obj map[string]any) bool {
+	if obj == nil {
+		return false
+	}
+	_, ok := obj["pages"].([]any)
+	return ok
 }
 
 func decodeAstro(v any) any {
@@ -408,8 +444,8 @@ func ParseChapter(doc, number, chapterURL string) (*Chapter, error) {
 
 	props, _ := decodeAstro(data).(map[string]any)
 	rawPages, _ := props["pages"].([]any)
-	pages := []Page{}
-	for i, rp := range rawPages {
+	pages := make([]Page, 0, len(rawPages))
+	for _, rp := range rawPages {
 		pm, ok := rp.(map[string]any)
 		if !ok {
 			continue
@@ -418,11 +454,11 @@ func ParseChapter(doc, number, chapterURL string) (*Chapter, error) {
 		if !ok || u == "" {
 			continue
 		}
-		pages = append(pages, Page{Index: i, URL: resolveAgainst(chapterURL, u)})
+		// Compact indices so filenames stay contiguous after invalid entries.
+		pages = append(pages, Page{Index: len(pages), URL: resolveAgainst(chapterURL, u)})
 	}
 
 	premium := truthy(props["isLocked"]) || truthy(props["isPremium"])
-	locked := premium || len(pages) == 0
 	reason := ""
 	switch {
 	case premium:
@@ -433,7 +469,8 @@ func ParseChapter(doc, number, chapterURL string) (*Chapter, error) {
 	return &Chapter{
 		Number: number,
 		URL:    chapterURL,
-		Locked: locked,
+		Locked: premium,
+		Empty:  !premium && len(pages) == 0,
 		Reason: reason,
 		Pages:  pages,
 	}, nil
@@ -472,7 +509,7 @@ func orderedImageURLs(doc string) []string {
 			hits = append(hits, hit{loc[0], u})
 		}
 	}
-	sort.Slice(hits, func(i, j int) bool { return hits[i].start < hits[j].start })
+	slices.SortFunc(hits, func(a, b hit) int { return cmp.Compare(a.start, b.start) })
 	seen := map[string]bool{}
 	out := make([]string, 0, len(hits))
 	for _, h := range hits {

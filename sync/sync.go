@@ -1,8 +1,10 @@
 package sync
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -20,17 +22,23 @@ import (
 
 const batchSize = 3
 
-// Summary counts the outcome of a sync run.
+// Summary counts the outcome of a sync run. Failure counters are kept separate
+// by unit so a run can report one number without mixing pages and chapters.
 type Summary struct {
-	New         int      // pages downloaded
-	Skipped     int      // pages that were already present
-	Assumed     int      // chapters skipped by the bookmark's cutoff
-	Synced      int      // chapters skipped because they were fully synced
-	Failed      int      // pages or chapters that failed
-	Locked      int      // locked chapters
-	Chapters    int      // chapters considered
-	NewChapters []string // chapters that received at least one new page
+	New             int      // pages downloaded
+	Skipped         int      // pages that were already present
+	Assumed         int      // chapters skipped by the bookmark's cutoff
+	Synced          int      // chapters skipped because they were fully synced
+	Failed          int      // pages that failed
+	FailedChapters  int      // chapters that failed to fetch or parse
+	FailedBookmarks int      // bookmarks that failed as a whole
+	Locked          int      // locked chapters
+	Chapters        int      // chapters considered
+	NewChapters     []string // chapters that received at least one new page
 }
+
+// Failures returns the total number of failed units.
+func (s *Summary) Failures() int { return s.Failed + s.FailedChapters + s.FailedBookmarks }
 
 // Add accumulates another summary.
 func (s *Summary) Add(o Summary) {
@@ -39,6 +47,8 @@ func (s *Summary) Add(o Summary) {
 	s.Assumed += o.Assumed
 	s.Synced += o.Synced
 	s.Failed += o.Failed
+	s.FailedChapters += o.FailedChapters
+	s.FailedBookmarks += o.FailedBookmarks
 	s.Locked += o.Locked
 	s.Chapters += o.Chapters
 	s.NewChapters = append(s.NewChapters, o.NewChapters...)
@@ -87,8 +97,8 @@ func (s *Summary) details() []string {
 	if s.Locked > 0 {
 		parts = append(parts, fmt.Sprintf("%d locked", s.Locked))
 	}
-	if s.Failed > 0 {
-		parts = append(parts, fmt.Sprintf("%d failed", s.Failed))
+	if n := s.Failures(); n > 0 {
+		parts = append(parts, fmt.Sprintf("%d failed", n))
 	}
 	return parts
 }
@@ -101,12 +111,12 @@ func plural(n int, one, many string) string {
 }
 
 // AddSeries registers a series URL as a bookmark.
-func AddSeries(f *fetch.Fetcher, st *state.State, rawURL string) (slug, title string, created bool, err error) {
+func AddSeries(ctx context.Context, f *fetch.Fetcher, st *state.State, rawURL string) (slug, title string, created bool, err error) {
 	canonical, slug, err := discover.ParseSeriesURL(rawURL)
 	if err != nil {
 		return "", "", false, err
 	}
-	doc, err := f.GetText(canonical)
+	doc, err := f.GetText(ctx, canonical)
 	if err != nil {
 		return "", "", false, err
 	}
@@ -115,17 +125,21 @@ func AddSeries(f *fetch.Fetcher, st *state.State, rawURL string) (slug, title st
 	return slug, title, created, err
 }
 
-// AtomicWrite writes data to a .part file, fsyncs it and renames it into
-// place. It returns the SHA-256 of the written data.
+// AtomicWrite writes data to a unique temporary file, fsyncs it and renames
+// it into place. No stale .part file is ever left behind. It returns the
+// SHA-256 of the written data.
 func AtomicWrite(dest string, data []byte) (string, error) {
-	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+	dir := filepath.Dir(dest)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
-	tmp := dest + ".part"
-	fh, err := os.Create(tmp)
+	fh, err := os.CreateTemp(dir, ".imgsync-*.part")
 	if err != nil {
 		return "", err
 	}
+	tmp := fh.Name()
+	defer func() { _ = os.Remove(tmp) }()
+
 	if _, err := fh.Write(data); err != nil {
 		_ = fh.Close()
 		return "", err
@@ -140,8 +154,25 @@ func AtomicWrite(dest string, data []byte) (string, error) {
 	if err := os.Rename(tmp, dest); err != nil {
 		return "", err
 	}
+	if err := syncDir(dir); err != nil {
+		return "", err
+	}
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:]), nil
+}
+
+// syncDir makes the rename durable where the platform supports it.
+func syncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	if err := d.Sync(); err != nil {
+		// Some filesystems do not support fsync on directories.
+		slog.Warn("cannot fsync directory", "dir", dir, "error", err)
+	}
+	return nil
 }
 
 func resolveURL(base, ref string) string {
@@ -157,6 +188,7 @@ func resolveURL(base, ref string) string {
 }
 
 func syncPage(
+	ctx context.Context,
 	f *fetch.Fetcher,
 	st *state.State,
 	slug, number string,
@@ -176,20 +208,23 @@ func syncPage(
 	if row != nil && !verify {
 		return "skipped"
 	}
-
-	if dryRun {
-		if row != nil {
-			return "skipped"
-		}
+	// Pages integrated by set-location have no source URL. There is nothing to
+	// revalidate, so --verify must not turn them into failures.
+	if verify && row != nil && row.URL == "" {
+		return "skipped"
+	}
+	// A dry run without verification reports purely from the database. With
+	// verification, the conditional GET below is needed to detect changes.
+	if dryRun && row == nil {
 		slog.Info("would download", "path", dest)
 		return "new"
 	}
 
 	var img *fetch.ImageResponse
 	if row != nil {
-		img, err = f.FetchImage(page.URL, row.ETag, row.LastModified)
+		img, err = f.FetchImage(ctx, page.URL, row.ETag, row.LastModified)
 	} else {
-		img, err = f.FetchImage(page.URL, "", "")
+		img, err = f.FetchImage(ctx, page.URL, "", "")
 	}
 	if err != nil {
 		slog.Error("fetch failed", "url", page.URL, "error", err)
@@ -198,11 +233,30 @@ func syncPage(
 	if img == nil {
 		return "skipped"
 	}
+	if dryRun {
+		slog.Info("would download", "path", dest)
+		return "new"
+	}
 
-	digest, err := AtomicWrite(dest, img.Body)
-	if err != nil {
+	sum := sha256.Sum256(img.Body)
+	digest := hex.EncodeToString(sum[:])
+	if row != nil && row.SHA256 == digest {
+		// A 200 with identical bytes is unchanged: refresh validators but keep
+		// the stored path and do not rewrite the file or count a new page.
+		if err := st.UpsertPage(slug, number, page.Index, page.URL, row.Path, img.ETag, img.LastModified, digest, int64(len(img.Body))); err != nil {
+			slog.Error("state update failed", "path", row.Path, "error", err)
+		}
+		return "skipped"
+	}
+
+	if _, err := AtomicWrite(dest, img.Body); err != nil {
 		slog.Error("write failed", "path", dest, "error", err)
 		return "failed"
+	}
+	if old := supersededPath(row, dest, chapterDir, page.Index); old != "" {
+		if err := os.Remove(old); err != nil && !errors.Is(err, os.ErrNotExist) {
+			slog.Warn("old page file left behind", "path", old, "error", err)
+		}
 	}
 	if err := st.UpsertPage(slug, number, page.Index, page.URL, dest, img.ETag, img.LastModified, digest, int64(len(img.Body))); err != nil {
 		slog.Error("state update failed", "path", dest, "error", err)
@@ -212,7 +266,23 @@ func syncPage(
 	return "new"
 }
 
+// supersededPath finds a file from an earlier run whose extension no longer
+// matches the current URL, so it can be removed after the new file is written.
+func supersededPath(row *state.Page, dest, chapterDir string, index int) string {
+	if row == nil || row.Path == "" || row.Path == dest {
+		return ""
+	}
+	if filepath.Dir(row.Path) != chapterDir {
+		return ""
+	}
+	if !strings.HasPrefix(filepath.Base(row.Path), fmt.Sprintf("%03d.", index+1)) {
+		return ""
+	}
+	return row.Path
+}
+
 func syncPages(
+	ctx context.Context,
 	f *fetch.Fetcher,
 	st *state.State,
 	slug, number string,
@@ -226,7 +296,7 @@ func syncPages(
 		wg.Add(1)
 		go func(i int, page discover.Page) {
 			defer wg.Done()
-			out[i] = syncPage(f, st, slug, number, page, chapterDir, dryRun, verify)
+			out[i] = syncPage(ctx, f, st, slug, number, page, chapterDir, dryRun, verify)
 		}(i, page)
 	}
 	wg.Wait()
@@ -272,6 +342,7 @@ func pendingPages(pages []discover.Page, synced map[int]bool) int {
 // SyncSeries syncs one bookmark. outRoot is the bookmark location or the
 // global output folder.
 func SyncSeries(
+	ctx context.Context,
 	f *fetch.Fetcher,
 	st *state.State,
 	bookmark state.Bookmark,
@@ -282,7 +353,7 @@ func SyncSeries(
 	summary := Summary{}
 	slug := bookmark.Slug
 
-	doc, err := f.GetText(bookmark.URL)
+	doc, err := f.GetText(ctx, bookmark.URL)
 	if err != nil {
 		return summary, err
 	}
@@ -360,17 +431,19 @@ func SyncSeries(
 
 		slog.Debug("indexing chapter", "bookmark", slug, "chapter", ref.Number)
 		chapterURL := resolveURL(bookmark.URL, ref.Path)
-		chapterDoc, err := f.GetText(chapterURL)
+		chapterDoc, err := f.GetText(ctx, chapterURL)
 		if err != nil {
 			slog.Error("chapter fetch failed", "bookmark", slug, "chapter", ref.Number, "error", err)
-			summary.Failed++
+			summary.FailedChapters++
+			summary.Chapters++
 			indexBar.Add(1)
 			continue
 		}
 		chapter, err := discover.ParseChapter(chapterDoc, ref.Number, chapterURL)
 		if err != nil {
 			slog.Error("chapter parse failed", "bookmark", slug, "chapter", ref.Number, "error", err)
-			summary.Failed++
+			summary.FailedChapters++
+			summary.Chapters++
 			indexBar.Add(1)
 			continue
 		}
@@ -391,6 +464,15 @@ func SyncSeries(
 			continue
 		}
 
+		if chapter.Empty {
+			// No payload means the parser could not read the chapter; it is
+			// not a paywall. Report it without persisting a "locked" status.
+			slog.Warn("chapter has no pages - site layout may have changed", "bookmark", slug, "chapter", ref.Number)
+			summary.FailedChapters++
+			indexBar.Add(1)
+			continue
+		}
+
 		plan := chapterPlan{ref: ref, chapter: chapter}
 		if needsSynced {
 			plan.pending = pendingPages(chapter.Pages, synced[ref.Number])
@@ -400,7 +482,7 @@ func SyncSeries(
 
 		// Everything is already in the database. Remember it so later runs can
 		// skip this chapter page entirely.
-		if needsSynced && plan.pending == 0 && len(chapter.Pages) > 0 {
+		if !verify && needsSynced && plan.pending == 0 && len(chapter.Pages) > 0 {
 			if !dryRun {
 				if err := st.SetChapter(slug, ref.Number, chapterURL, state.ChapterStatusSynced, len(chapter.Pages)); err != nil {
 					slog.Error("state update failed", "bookmark", slug, "chapter", ref.Number, "error", err)
@@ -419,7 +501,7 @@ func SyncSeries(
 	indexBar.Finish()
 
 	total := pendingTotal
-	if limit != nil && needsSynced && total > *limit {
+	if limit != nil && total > *limit {
 		total = *limit
 	}
 	bar := progress.New(slug, "pages", total)
@@ -454,7 +536,7 @@ func SyncSeries(
 				chunk = chunk[:*limit]
 			}
 
-			results := syncPages(f, st, slug, ref.Number, chunk, chapterDir, dryRun, verify)
+			results := syncPages(ctx, f, st, slug, ref.Number, chunk, chapterDir, dryRun, verify)
 			handled += len(results)
 			for _, result := range results {
 				switch result {
@@ -470,7 +552,10 @@ func SyncSeries(
 					summary.Failed++
 					chapterFailed++
 				}
-				if !needsSynced || result != "skipped" {
+				// With --verify and no limit, unchanged pages are part of the
+				// work (they were checked with a conditional GET). When a
+				// limit is set the bar is capped at new pages only.
+				if result != "skipped" || (!needsSynced && limit == nil) {
 					bar.Add(1)
 				}
 			}
@@ -533,12 +618,15 @@ func relinkRenamedPaths(st *state.State, slug string, renamed map[string]string)
 // seriesOutRoot is the download folder for a bookmark without an explicit
 // location. Folders created by older versions from the lowercase URL slug are
 // renamed to the title-based name once, so downloads stay in one folder.
-func seriesOutRoot(st *state.State, b state.Bookmark, dryRun bool) string {
-	base := config.OutputDir()
+func seriesOutRoot(st *state.State, b state.Bookmark, dryRun bool) (string, error) {
+	base, err := config.OutputDir()
+	if err != nil {
+		return "", err
+	}
 	target := filepath.Join(base, discover.SeriesFolderName(b.Title, b.Slug))
 	legacy := filepath.Join(base, discover.SeriesFolder(b.Slug))
 	if target == legacy {
-		return target
+		return target, nil
 	}
 
 	targetExists := isDir(target)
@@ -546,14 +634,14 @@ func seriesOutRoot(st *state.State, b state.Bookmark, dryRun bool) string {
 	switch {
 	case !targetExists && legacyExists:
 		if dryRun {
-			return legacy
+			return legacy, nil
 		}
 		if err := os.Rename(legacy, target); err != nil {
 			slog.Warn(
 				"cannot rename series folder to title - keeping the existing folder",
 				"bookmark", b.Slug, "from", legacy, "to", target, "error", err,
 			)
-			return legacy
+			return legacy, nil
 		}
 		if err := relinkPagePaths(st, b.Slug, legacy, target); err != nil {
 			slog.Warn("series folder renamed but stored page paths were not updated", "bookmark", b.Slug, "error", err)
@@ -566,7 +654,7 @@ func seriesOutRoot(st *state.State, b state.Bookmark, dryRun bool) string {
 			"bookmark", b.Slug, "title_folder", target, "slug_folder", legacy,
 		)
 	}
-	return target
+	return target, nil
 }
 
 // normalizeChapterFolders renames legacy lowercase chapter folders to the
@@ -627,8 +715,10 @@ func normalizeChapterFolders(st *state.State, slug, outRoot string, dryRun bool)
 	return nil
 }
 
-// SyncAll syncs every enabled bookmark (optionally filtered by slug).
+// SyncAll syncs every enabled bookmark (optionally filtered by slug). The
+// page limit is applied independently to each bookmark.
 func SyncAll(
+	ctx context.Context,
 	f *fetch.Fetcher,
 	st *state.State,
 	slugs []string,
@@ -672,16 +762,24 @@ func SyncAll(
 
 	for _, b := range bookmarks {
 		started := state.Now()
+		var limitForBookmark *int
+		if limit != nil {
+			n := *limit
+			limitForBookmark = &n
+		}
 		outRoot := b.Location
 		if outRoot == "" {
-			outRoot = seriesOutRoot(st, b, dryRun)
+			outRoot, err = seriesOutRoot(st, b, dryRun)
+			if err != nil {
+				return Summary{}, nil, err
+			}
 		}
 		if err := normalizeChapterFolders(st, b.Slug, outRoot, dryRun); err != nil {
 			slog.Warn("chapter folder migration failed", "bookmark", b.Slug, "error", err)
 		}
 
 		slog.Info("syncing", "bookmark", b.Slug)
-		summary, err := SyncSeries(f, st, b, outRoot, dryRun, verify, limit)
+		summary, err := SyncSeries(ctx, f, st, b, outRoot, dryRun, verify, limitForBookmark)
 
 		result := "ok"
 		note := ""
@@ -689,16 +787,16 @@ func SyncAll(
 
 		if err != nil {
 			failed = 1
-			totals.Failed++
+			totals.FailedBookmarks++
 			result = "error"
 			note = "error: " + err.Error()
 			failures = append(failures, b.Slug)
 			slog.Error("bookmark failed", "bookmark", b.Slug, "error", err)
 		} else {
 			totals.Add(summary)
-			newPages, skipped, failed, locked = summary.New, summary.Skipped, summary.Failed, summary.Locked
+			newPages, skipped, failed, locked = summary.New, summary.Skipped, summary.Failures(), summary.Locked
 			note = summary.Note()
-			if summary.Failed > 0 {
+			if summary.Failures() > 0 {
 				result = "partial"
 				failures = append(failures, b.Slug)
 			}

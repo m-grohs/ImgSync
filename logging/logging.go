@@ -11,7 +11,12 @@ import (
 	"imgsync/progress"
 )
 
-var level = new(slog.LevelVar)
+const maxLogBytes = 5 << 20 // 5 MiB per log file, one rotated backup
+
+var (
+	level   = new(slog.LevelVar)
+	logFile *os.File
+)
 
 // Setup configures slog to write to stderr and the log file.
 func Setup(verbose bool) {
@@ -21,8 +26,15 @@ func Setup(verbose bool) {
 		level.Set(slog.LevelInfo)
 	}
 	var w io.Writer = progress.Writer(os.Stderr)
-	if f, err := os.OpenFile(config.LogPath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); err == nil {
-		w = io.MultiWriter(progress.Writer(os.Stderr), f)
+	if err := config.EnsureDataDir(); err == nil {
+		path := config.LogPath()
+		if info, err := os.Stat(path); err == nil && info.Size() > maxLogBytes {
+			_ = os.Rename(path, path+".1")
+		}
+		if f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); err == nil {
+			logFile = f
+			w = io.MultiWriter(progress.Writer(os.Stderr), f)
+		}
 	}
 	slog.SetDefault(slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: level})))
 }
@@ -33,4 +45,14 @@ func SetVerbose(verbose bool) {
 	if verbose {
 		level.Set(slog.LevelDebug)
 	}
+}
+
+// Close releases the log file, if one was opened.
+func Close() error {
+	if logFile == nil {
+		return nil
+	}
+	err := logFile.Close()
+	logFile = nil
+	return err
 }

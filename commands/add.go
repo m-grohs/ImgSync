@@ -1,9 +1,12 @@
 package commands
 
 import (
+	"context"
 	"flag"
 	"fmt"
+	"log/slog"
 	"os"
+	"os/signal"
 	"strings"
 
 	"imgsync/config"
@@ -61,12 +64,15 @@ func Add(args []string) int {
 	}
 	defer st.Close()
 
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
 	f := fetch.New()
 	defer f.Close()
 
 	rc := 0
 	for _, u := range urls {
-		slug, title, created, err := sync.AddSeries(f, st, u)
+		slug, title, created, err := sync.AddSeries(ctx, f, st, u)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "failed: %s: %v\n", u, err)
 			rc = 1
@@ -75,6 +81,12 @@ func Add(args []string) int {
 		verb := "added"
 		if !created {
 			verb = "updated"
+			if b, err := st.GetBookmark(slug); err == nil && b != nil {
+				if b.Location != "" || b.AssumeSyncedThrough != "" {
+					slog.Warn("existing bookmark keeps its location and assumption",
+						"bookmark", slug, "location", b.Location, "assumed_through", b.AssumeSyncedThrough)
+				}
+			}
 		}
 		id, idErr := st.BookmarkID(slug)
 		if idErr != nil {

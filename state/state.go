@@ -2,7 +2,10 @@ package state
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -63,6 +66,9 @@ func Now() string { return time.Now().UTC().Format("2006-01-02T15:04:05-07:00") 
 // Open opens (and initializes) the state database. It refuses to touch a
 // legacy Python database (which has a "series" table) so nothing is corrupted.
 func Open(path string) (*State, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, err
+	}
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, err
@@ -174,6 +180,19 @@ func hasLegacySchema(db *sql.DB) (bool, error) {
 // Close closes the database.
 func (s *State) Close() error { return s.db.Close() }
 
+// tx runs fn in a single transaction so multi-statement updates cannot leave
+// the database in a half-updated state.
+func (s *State) tx(fn func(*sql.Tx) error) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	if err := fn(tx); err != nil {
+		return errors.Join(err, tx.Rollback())
+	}
+	return tx.Commit()
+}
+
 // -- bookmarks ---------------------------------------------------------------
 
 const bookmarkColumns = `
@@ -277,7 +296,7 @@ func (s *State) queryBookmarks(query string) ([]Bookmark, error) {
 func (s *State) GetBookmark(slug string) (*Bookmark, error) {
 	row := s.db.QueryRow(`SELECT `+bookmarkColumns+` FROM bookmarks b WHERE b.slug = ?`, slug)
 	b, err := scanBookmark(row)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
@@ -350,25 +369,36 @@ func (s *State) ResolveBookmark(ref string) (*Bookmark, error) {
 	}
 }
 
-// RemoveBookmark deletes a bookmark (downloaded files are kept).
+// RemoveBookmark deletes a bookmark (downloaded files and their page rows are
+// kept so re-adding the same series does not re-download). Run history and
+// bookkeeping rows are removed atomically with the bookmark.
 func (s *State) RemoveBookmark(slug string) (bool, error) {
-	res, err := s.db.Exec(`DELETE FROM bookmarks WHERE slug = ?`, slug)
-	if err != nil {
-		return false, err
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return false, err
-	}
-	if n > 0 {
-		if _, err := s.db.Exec(`DELETE FROM assume_exceptions WHERE slug = ?`, slug); err != nil {
-			return true, err
+	var removed bool
+	err := s.tx(func(tx *sql.Tx) error {
+		res, err := tx.Exec(`DELETE FROM bookmarks WHERE slug = ?`, slug)
+		if err != nil {
+			return err
 		}
-		if _, err := s.db.Exec(`DELETE FROM bookmark_ids WHERE slug = ?`, slug); err != nil {
-			return true, err
+		n, err := res.RowsAffected()
+		if err != nil {
+			return err
 		}
-	}
-	return n > 0, nil
+		removed = n > 0
+		if !removed {
+			return nil
+		}
+		for _, stmt := range []string{
+			`DELETE FROM assume_exceptions WHERE slug = ?`,
+			`DELETE FROM bookmark_ids WHERE slug = ?`,
+			`DELETE FROM runs WHERE slug = ?`,
+		} {
+			if _, err := tx.Exec(stmt, slug); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	return removed, err
 }
 
 // SetLocation points a bookmark at its filesystem folder.
@@ -386,11 +416,13 @@ func (s *State) SetAssumeSyncedThrough(slug, number string) error {
 
 // ClearAssumeSynced removes the chapter cutoff and all of its exceptions.
 func (s *State) ClearAssumeSynced(slug string) error {
-	if _, err := s.db.Exec(`DELETE FROM assume_exceptions WHERE slug = ?`, slug); err != nil {
+	return s.tx(func(tx *sql.Tx) error {
+		if _, err := tx.Exec(`DELETE FROM assume_exceptions WHERE slug = ?`, slug); err != nil {
+			return err
+		}
+		_, err := tx.Exec(`UPDATE bookmarks SET assume_synced_through = '' WHERE slug = ?`, slug)
 		return err
-	}
-	_, err := s.db.Exec(`UPDATE bookmarks SET assume_synced_through = '' WHERE slug = ?`, slug)
-	return err
+	})
 }
 
 // AssumeExceptions returns the chapters that override the bookmark's cutoff.
@@ -520,7 +552,7 @@ func (s *State) GetPage(slug, chapter string, index int) (*Page, error) {
 		&p.Slug, &p.Chapter, &p.Index, &p.URL, &p.Path, &p.ETag,
 		&p.LastModified, &p.SHA256, &p.Size, &p.Status, &p.UpdatedAt,
 	)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
@@ -631,25 +663,32 @@ func (s *State) UnsyncChapters(slug string, chapters []string) (int64, error) {
 	for _, c := range chapters {
 		args = append(args, c)
 	}
-	res, err := s.db.Exec(
-		`DELETE FROM pages WHERE slug = ? AND chapter IN (`+placeholders(len(chapters))+`)`,
-		args...,
-	)
-	if err != nil {
-		return 0, err
-	}
 	// Force the next run to index these chapters again instead of skipping
-	// them as fully synced.
-	updateArgs := make([]any, 0, len(args)+1)
-	updateArgs = append(updateArgs, ChapterStatusPending)
-	updateArgs = append(updateArgs, args...)
-	if _, err := s.db.Exec(
-		`UPDATE chapters SET status = ? WHERE slug = ? AND number IN (`+placeholders(len(chapters))+`)`,
-		updateArgs...,
-	); err != nil {
-		return 0, err
-	}
-	return res.RowsAffected()
+	// them as fully synced. Both statements must succeed together: deleting
+	// rows while leaving status "synced" would permanently hide the chapter.
+	var deleted int64
+	err := s.tx(func(tx *sql.Tx) error {
+		res, err := tx.Exec(
+			`DELETE FROM pages WHERE slug = ? AND chapter IN (`+placeholders(len(chapters))+`)`,
+			args...,
+		)
+		if err != nil {
+			return err
+		}
+		deleted, err = res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		updateArgs := make([]any, 0, len(args)+1)
+		updateArgs = append(updateArgs, ChapterStatusPending)
+		updateArgs = append(updateArgs, args...)
+		_, err = tx.Exec(
+			`UPDATE chapters SET status = ? WHERE slug = ? AND number IN (`+placeholders(len(chapters))+`)`,
+			updateArgs...,
+		)
+		return err
+	})
+	return deleted, err
 }
 
 // -- runs --------------------------------------------------------------------

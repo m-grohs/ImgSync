@@ -1,8 +1,0 @@
-myst-might-mayhem-7ba78ec7    Chapter 125     [████████████████████████]  100%  125/125 chapters  105.1/s  ETA 0:00
-myst-might-mayhem-7ba78ec7    Chapter 125     [████████████████████████]  100%  71/71 pages  3.3/s  ETA 0:00
-time=2026-11-19T14:53:57.902+01:00 level=INFO msg=synced bookmark=myst-might-mayhem-7ba78ec7 note="+71 new, 0 unchanged, 121 assumed, 0 locked, 0 failed, 125 chapters"
-done: +71 new, 291 unchanged, 121 assumed, 0 locked, 0 failed, 134 chapters
-
-- this looks weird and doesnt tell the 122-124 were also downloaded. make this clearer and at the same time simpler/prettier
-
-- same time when downloading all chapters mark them as synced so the indexing doesnt process them 

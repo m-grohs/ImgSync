@@ -1,9 +1,12 @@
 package fetch
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestFetchImageConditional(t *testing.T) {
@@ -21,7 +24,7 @@ func TestFetchImageConditional(t *testing.T) {
 	f := New()
 	defer f.Close()
 
-	img, err := f.FetchImage(srv.URL, "", "")
+	img, err := f.FetchImage(t.Context(), srv.URL, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -29,7 +32,7 @@ func TestFetchImageConditional(t *testing.T) {
 		t.Fatalf("img = %+v", img)
 	}
 
-	notModified, err := f.FetchImage(srv.URL, img.ETag, "")
+	notModified, err := f.FetchImage(t.Context(), srv.URL, img.ETag, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,8 +51,43 @@ func TestFetchImageRejectsHTML(t *testing.T) {
 	f := New()
 	defer f.Close()
 
-	if _, err := f.FetchImage(srv.URL, "", ""); err == nil {
+	if _, err := f.FetchImage(t.Context(), srv.URL, "", ""); err == nil {
 		t.Fatal("expected content-type error")
+	}
+}
+
+func TestRetryAfterHTTPDate(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", time.Now().Add(100*time.Millisecond).UTC().Format(http.TimeFormat))
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	f := New()
+	defer f.Close()
+	start := time.Now()
+	_, err := f.GetText(t.Context(), srv.URL)
+	if err == nil {
+		t.Fatal("expected final 429 to be returned as an error")
+	}
+	if elapsed := time.Since(start); elapsed < 80*time.Millisecond {
+		t.Fatalf("HTTP-date Retry-After was ignored (elapsed %s)", elapsed)
+	}
+}
+
+func TestGetTextHonoursCancellation(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(500 * time.Millisecond)
+		_, _ = w.Write([]byte("late"))
+	}))
+	defer srv.Close()
+
+	f := New()
+	defer f.Close()
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	if _, err := f.GetText(ctx, srv.URL); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected context deadline error, got %v", err)
 	}
 }
 
@@ -62,7 +100,7 @@ func TestGetText(t *testing.T) {
 	f := New()
 	defer f.Close()
 
-	text, err := f.GetText(srv.URL)
+	text, err := f.GetText(t.Context(), srv.URL)
 	if err != nil {
 		t.Fatal(err)
 	}

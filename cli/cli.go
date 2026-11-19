@@ -40,6 +40,8 @@ func Run(args []string) int {
 		return commands.Unsync(args[1:])
 	case "run":
 		return commands.Run(args[1:])
+	case "version":
+		return commands.Version(args[1:])
 	case "help", "-h", "--help":
 		usage(os.Stdout)
 		return 0
@@ -64,6 +66,7 @@ Usage:
   imgsync assume-synced <id|slug> --clear     remove the assumption
   imgsync unsync <id|slug> [chapter...]       mark chapter(s) unsynced [--dry-run]
   imgsync run [--series ID|SLUG] [--dry-run] [--verify] [--limit N] [--no-progress] [--verbose]
+  imgsync version                             print build information
 
 A bookmark can be referenced by its list ID (e.g. 3), a unique slug prefix,
 or the full slug. "imgsync list" shows the IDs and slugs.

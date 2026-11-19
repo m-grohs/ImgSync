@@ -48,7 +48,13 @@ imgsync run --verify                         # conditional GET for db-synced pag
 imgsync run --limit 10                       # max 10 new pages per bookmark
 imgsync run --no-progress                    # hide the progress bar
 imgsync run --verbose                        # show per-chapter indexing details
+imgsync version                              # build information
 ```
+
+`--limit` applies separately to every bookmark. With `--verify`, all chapter
+pages are still indexed so changed pages can be found, but at most N new images
+are downloaded per bookmark. Unchanged images (304 or identical bytes) count as
+unchanged, not new.
 
 Wherever a command takes a bookmark, you can use the `ID` shown by
 `imgsync list` (e.g. `3`), a unique slug prefix (e.g. `blade`), or the full

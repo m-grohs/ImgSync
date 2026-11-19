@@ -1,9 +1,11 @@
 package commands
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
 
 	"imgsync/config"
@@ -59,10 +61,13 @@ func Run(args []string) int {
 		series[i] = bookmark.Slug
 	}
 
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
 	f := fetch.New()
 	defer f.Close()
 
-	totals, failures, err := sync.SyncAll(f, st, series, *dryRun, *verify, limitPtr)
+	totals, failures, err := sync.SyncAll(ctx, f, st, series, *dryRun, *verify, limitPtr)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		return 1

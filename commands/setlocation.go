@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"cmp"
 	"crypto/sha256"
 	"encoding/hex"
 	"flag"
@@ -9,7 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strconv"
 
 	"imgsync/config"
@@ -263,7 +264,7 @@ func scanLocation(root string) (map[string][]diskPage, error) {
 		}
 	}
 	for _, pages := range out {
-		sort.Slice(pages, func(i, j int) bool { return pages[i].index < pages[j].index })
+		slices.SortFunc(pages, func(a, b diskPage) int { return cmp.Compare(a.index, b.index) })
 	}
 	return out, nil
 }

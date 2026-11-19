@@ -2,15 +2,27 @@ package commands
 
 import (
 	"flag"
+	"slices"
 	"strings"
 )
 
 // parseArgs parses flags even when they appear after positional arguments
-// (the stdlib flag package stops at the first non-flag argument). It returns
-// the positional arguments.
+// (the stdlib flag package stops at the first non-flag argument). An explicit
+// "--" terminates flag parsing and keeps all following values positional.
 func parseArgs(fs *flag.FlagSet, args []string) ([]string, error) {
+	if i := slices.Index(args, "--"); i >= 0 {
+		before, err := parseArgsNoTerminator(fs, args[:i])
+		if err != nil {
+			return nil, err
+		}
+		return append(before, args[i+1:]...), nil
+	}
+	return parseArgsNoTerminator(fs, args)
+}
+
+func parseArgsNoTerminator(fs *flag.FlagSet, args []string) ([]string, error) {
 	var positionals []string
-	for {
+	for len(args) > 0 {
 		if err := fs.Parse(args); err != nil {
 			return nil, err
 		}
@@ -25,4 +37,5 @@ func parseArgs(fs *flag.FlagSet, args []string) ([]string, error) {
 		}
 		args = rest
 	}
+	return positionals, nil
 }

@@ -1,9 +1,11 @@
 package fetch
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"math/rand/v2"
 	"net"
 	"net/http"
@@ -18,14 +20,18 @@ const (
 	maxAttempts        = 4
 	defaultConcurrency = 3
 	defaultMinInterval = 300 * time.Millisecond
+	maxRetryDelay      = 60 * time.Second
 )
 
 var retryStatuses = map[int]bool{429: true, 500: true, 502: true, 503: true, 504: true}
 
-var browserHeaders = map[string]string{
-	"User-Agent":                userAgent,
+var commonHeaders = map[string]string{
+	"User-Agent":      userAgent,
+	"Accept-Language": "en-US,en;q=0.9",
+}
+
+var documentHeaders = map[string]string{
 	"Accept":                    "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-	"Accept-Language":           "en-US,en;q=0.9",
 	"Sec-CH-UA":                 `"Chromium";v="131", "Not_A Brand";v="24"`,
 	"Sec-CH-UA-Mobile":          "?0",
 	"Sec-CH-UA-Platform":        `"Linux"`,
@@ -34,6 +40,12 @@ var browserHeaders = map[string]string{
 	"Sec-Fetch-Site":            "none",
 	"Sec-Fetch-User":            "?1",
 	"Upgrade-Insecure-Requests": "1",
+}
+
+var imageHeaders = map[string]string{
+	"Accept":         "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+	"Sec-Fetch-Dest": "image",
+	"Sec-Fetch-Mode": "no-cors",
 }
 
 // ImageResponse is a fetched image.
@@ -45,7 +57,7 @@ type ImageResponse struct {
 }
 
 // Fetcher is a polite HTTP client: browser headers, HTTP/2, retries and
-// throttling.
+// throttling. Every request is bound to the context passed by the caller.
 type Fetcher struct {
 	client      *http.Client
 	sem         chan struct{}
@@ -80,14 +92,29 @@ func (f *Fetcher) Close() {
 	f.client.CloseIdleConnections()
 }
 
-func (f *Fetcher) throttle() {
+// throttle spaces requests globally and honours cancellation while waiting.
+func (f *Fetcher) throttle(ctx context.Context) error {
 	f.throttleMu.Lock()
 	defer f.throttleMu.Unlock()
 	wait := f.minInterval - time.Since(f.lastRequest)
 	if wait > 0 {
-		time.Sleep(wait)
+		if err := sleepCtx(ctx, wait); err != nil {
+			return err
+		}
 	}
 	f.lastRequest = time.Now()
+	return nil
+}
+
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
 }
 
 func backoff(attempt int) time.Duration {
@@ -95,48 +122,70 @@ func backoff(attempt int) time.Duration {
 	return base + time.Duration(rand.Int64N(int64(time.Second)))
 }
 
-func (f *Fetcher) do(rawURL string, extra http.Header) (*http.Response, error) {
-	for attempt := 1; ; attempt++ {
-		f.throttle()
+func retryDelay(resp *http.Response, attempt int) time.Duration {
+	delay := backoff(attempt)
+	ra := resp.Header.Get("Retry-After")
+	if ra == "" {
+		return delay
+	}
+	if secs, err := strconv.Atoi(ra); err == nil {
+		delay = time.Duration(secs) * time.Second
+	} else if when, err := http.ParseTime(ra); err == nil {
+		delay = time.Until(when)
+	}
+	if delay < 0 {
+		delay = 0
+	}
+	if delay > maxRetryDelay {
+		delay = maxRetryDelay
+	}
+	return delay
+}
 
-		req, err := http.NewRequest(http.MethodGet, rawURL, nil)
+func (f *Fetcher) do(ctx context.Context, rawURL string, extra map[string]string) (*http.Response, error) {
+	for attempt := 1; ; attempt++ {
+		if err := f.throttle(ctx); err != nil {
+			return nil, err
+		}
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 		if err != nil {
 			return nil, err
 		}
-		for k, v := range browserHeaders {
+		for k, v := range commonHeaders {
 			req.Header.Set(k, v)
 		}
-		for k, vv := range extra {
-			for _, v := range vv {
-				req.Header.Set(k, v)
-			}
+		for k, v := range extra {
+			req.Header.Set(k, v)
 		}
 
 		resp, err := f.client.Do(req)
 		if err != nil {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
 			if attempt >= maxAttempts {
 				return nil, fmt.Errorf("%w: %s", err, rawURL)
 			}
 			delay := backoff(attempt)
 			slog.Warn("network error, retrying", "error", err, "delay", delay.String(), "url", rawURL)
-			time.Sleep(delay)
+			if err := sleepCtx(ctx, delay); err != nil {
+				return nil, err
+			}
 			continue
 		}
 
 		if retryStatuses[resp.StatusCode] && attempt < maxAttempts {
-			delay := backoff(attempt)
-			if ra := resp.Header.Get("Retry-After"); ra != "" {
-				if secs, err := strconv.Atoi(ra); err == nil {
-					delay = time.Duration(secs) * time.Second
-				}
-			}
+			delay := retryDelay(resp, attempt)
 			_ = resp.Body.Close()
 			slog.Warn("retryable HTTP status, retrying", "status", resp.StatusCode, "delay", delay.String(), "url", rawURL)
-			time.Sleep(delay)
+			if err := sleepCtx(ctx, delay); err != nil {
+				return nil, err
+			}
 			continue
 		}
 
-		if resp.StatusCode == 403 {
+		if resp.StatusCode == http.StatusForbidden {
 			_ = resp.Body.Close()
 			return nil, fmt.Errorf(
 				"HTTP 403 (blocked - the site may require different headers or is challenging automated clients): %s",
@@ -149,8 +198,8 @@ func (f *Fetcher) do(rawURL string, extra http.Header) (*http.Response, error) {
 }
 
 // GetText fetches an HTML page.
-func (f *Fetcher) GetText(rawURL string) (string, error) {
-	resp, err := f.do(rawURL, nil)
+func (f *Fetcher) GetText(ctx context.Context, rawURL string) (string, error) {
+	resp, err := f.do(ctx, rawURL, documentHeaders)
 	if err != nil {
 		return "", err
 	}
@@ -166,19 +215,20 @@ func (f *Fetcher) GetText(rawURL string) (string, error) {
 }
 
 // FetchImage downloads an image. It returns (nil, nil) when the server answers
-// 304 Not Modified.
-func (f *Fetcher) FetchImage(rawURL, etag, lastModified string) (*ImageResponse, error) {
-	headers := http.Header{}
+// 304 Not Modified. The concurrency slot is held until the body is fully read.
+func (f *Fetcher) FetchImage(ctx context.Context, rawURL, etag, lastModified string) (*ImageResponse, error) {
+	headers := maps.Clone(imageHeaders)
 	if etag != "" {
-		headers.Set("If-None-Match", etag)
+		headers["If-None-Match"] = etag
 	}
 	if lastModified != "" {
-		headers.Set("If-Modified-Since", lastModified)
+		headers["If-Modified-Since"] = lastModified
 	}
 
 	f.sem <- struct{}{}
-	resp, err := f.do(rawURL, headers)
-	<-f.sem
+	defer func() { <-f.sem }()
+
+	resp, err := f.do(ctx, rawURL, headers)
 	if err != nil {
 		return nil, err
 	}
@@ -204,6 +254,6 @@ func (f *Fetcher) FetchImage(rawURL, etag, lastModified string) (*ImageResponse,
 		Body:         body,
 		ContentType:  contentType,
 		ETag:         resp.Header.Get("ETag"),
-		LastModified: resp.Header.Get("Last-Modified"),
+		LastModified: resp.Header.Get("LastModified"),
 	}, nil
 }

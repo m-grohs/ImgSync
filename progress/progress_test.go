@@ -6,6 +6,25 @@ import (
 	"time"
 )
 
+func TestNoProgressEnvParsing(t *testing.T) {
+	for _, tc := range []struct {
+		value string
+		want  bool
+	}{
+		{"1", true},
+		{"true", true},
+		{"0", false},
+		{"false", false},
+		{"", false},
+		{"nonsense", false},
+	} {
+		t.Setenv("IMGSYNC_NO_PROGRESS", tc.value)
+		if got := noProgressSet(); got != tc.want {
+			t.Errorf("noProgressSet(%q) = %v, want %v", tc.value, got, tc.want)
+		}
+	}
+}
+
 func TestFormatDuration(t *testing.T) {
 	cases := []struct {
 		d    time.Duration
