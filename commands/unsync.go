@@ -21,10 +21,10 @@ func Unsync(args []string) int {
 		return 2
 	}
 	if len(pos) < 1 {
-		fmt.Fprintln(os.Stderr, "usage: imgsync unsync <slug> [chapter...] [--dry-run]")
+		fmt.Fprintln(os.Stderr, "usage: imgsync unsync <id|slug> [chapter...] [--dry-run]")
 		return 2
 	}
-	slug := pos[0]
+	ref := pos[0]
 	wanted := pos[1:]
 
 	st, err := state.Open(config.DBPath())
@@ -34,17 +34,19 @@ func Unsync(args []string) int {
 	}
 	defer st.Close()
 
-	bookmark, err := st.GetBookmark(slug)
+	bookmark, err := st.ResolveBookmark(ref)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		return 1
 	}
 	if bookmark == nil {
-		fmt.Fprintf(os.Stderr, "error: no bookmark: %s\n", slug)
+		fmt.Fprintf(os.Stderr, "error: no bookmark: %s\n", ref)
 		return 1
 	}
+	slug := bookmark.Slug
 
 	var chapters []string
+	assumed := map[string]bool{}
 	if len(wanted) > 0 {
 		seen := map[string]bool{}
 		for _, arg := range wanted {
@@ -58,11 +60,37 @@ func Unsync(args []string) int {
 				chapters = append(chapters, number)
 			}
 		}
+		if bookmark.AssumeSyncedThrough != "" {
+			for _, number := range chapters {
+				if !discover.ChapterAtOrBefore(number, bookmark.AssumeSyncedThrough) {
+					continue
+				}
+				assumed[number] = true
+				if *dryRun {
+					continue
+				}
+				if err := st.AddAssumeException(slug, number); err != nil {
+					fmt.Fprintf(os.Stderr, "error: %v\n", err)
+					return 1
+				}
+			}
+		}
 	} else {
 		chapters, err = st.AllChaptersForBookmark(slug)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			return 1
+		}
+		if bookmark.AssumeSyncedThrough != "" {
+			for _, number := range chapters {
+				assumed[number] = true
+			}
+			if !*dryRun {
+				if err := st.ClearAssumeSynced(slug); err != nil {
+					fmt.Fprintf(os.Stderr, "error: %v\n", err)
+					return 1
+				}
+			}
 		}
 	}
 
@@ -87,6 +115,12 @@ func Unsync(args []string) int {
 		}
 		total += n
 		switch {
+		case n == 0 && assumed[number]:
+			if *dryRun {
+				fmt.Printf("%s: assumed synced - would re-download next run\n", label)
+			} else {
+				fmt.Printf("%s: assumed synced - will re-download next run\n", label)
+			}
 		case n == 0:
 			fmt.Printf("%s: nothing synced\n", label)
 		case *dryRun:

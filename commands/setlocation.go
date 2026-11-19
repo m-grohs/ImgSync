@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 
 	"imgsync/config"
 	"imgsync/discover"
@@ -27,16 +28,27 @@ func SetLocation(args []string) int {
 	fs := flag.NewFlagSet("set-location", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	dryRun := fs.Bool("dry-run", false, "report only, change nothing")
+	assumeThrough := fs.String("assume-synced-through", "", "treat chapters up to N as already downloaded")
 	pos, err := parseArgs(fs, args)
 	if err != nil {
 		return 2
 	}
 	if len(pos) != 2 {
-		fmt.Fprintln(os.Stderr, "usage: imgsync set-location <slug> <path> [--dry-run]")
+		fmt.Fprintln(os.Stderr, "usage: imgsync set-location <id|slug> <path> [--dry-run] [--assume-synced-through N]")
 		return 2
 	}
-	slug := pos[0]
+	ref := pos[0]
 	location := config.ExpandPath(pos[1])
+
+	cutoff := ""
+	if *assumeThrough != "" {
+		cutoff = discover.NormalizeChapter(*assumeThrough)
+		f, err := strconv.ParseFloat(cutoff, 64)
+		if cutoff == "" || err != nil || f <= 0 {
+			fmt.Fprintf(os.Stderr, "error: invalid chapter for --assume-synced-through: %s\n", *assumeThrough)
+			return 2
+		}
+	}
 
 	st, err := state.Open(config.DBPath())
 	if err != nil {
@@ -45,15 +57,16 @@ func SetLocation(args []string) int {
 	}
 	defer st.Close()
 
-	bookmark, err := st.GetBookmark(slug)
+	bookmark, err := st.ResolveBookmark(ref)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		return 1
 	}
 	if bookmark == nil {
-		fmt.Fprintf(os.Stderr, "error: no bookmark: %s\n", slug)
+		fmt.Fprintf(os.Stderr, "error: no bookmark: %s\n", ref)
 		return 1
 	}
+	slug := bookmark.Slug
 
 	if !*dryRun {
 		if err := os.MkdirAll(location, 0o755); err != nil {
@@ -138,6 +151,9 @@ func SetLocation(args []string) int {
 		return 1
 	}
 	for _, p := range allPages {
+		if cutoff != "" && discover.ChapterAtOrBefore(p.Chapter, cutoff) {
+			continue
+		}
 		if _, onDisk := diskPageAt(scanned, p.Chapter, p.Index); onDisk {
 			continue
 		}
@@ -154,6 +170,12 @@ func SetLocation(args []string) int {
 		if err := st.SetLocation(slug, location); err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			return 1
+		}
+		if cutoff != "" {
+			if err := st.SetAssumeSyncedThrough(slug, cutoff); err != nil {
+				fmt.Fprintf(os.Stderr, "error: %v\n", err)
+				return 1
+			}
 		}
 	}
 
@@ -172,6 +194,13 @@ func SetLocation(args []string) int {
 	} else {
 		fmt.Printf("integrated:             %d\n", integrated)
 		fmt.Printf("relinked paths:         %d\n", relinked)
+	}
+	if cutoff != "" {
+		if *dryRun {
+			fmt.Printf("would assume synced through: %s\n", discover.ChapterLabel(cutoff))
+		} else {
+			fmt.Printf("assumed synced through: %s\n", discover.ChapterLabel(cutoff))
+		}
 	}
 	fmt.Printf("missing (db says synced, not on disk): %d\n", len(missing))
 	for i, p := range missing {

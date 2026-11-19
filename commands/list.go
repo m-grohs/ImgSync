@@ -7,6 +7,7 @@ import (
 	"text/tabwriter"
 
 	"imgsync/config"
+	"imgsync/discover"
 	"imgsync/state"
 )
 
@@ -36,7 +37,7 @@ func List(args []string) int {
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "SLUG\tCH\tPAGES\tLOCATION\tLAST RUN\tTITLE")
+	fmt.Fprintln(w, "ID\tSLUG\tCH\tPAGES\tASSUMED\tLOCATION\tLAST RUN\tTITLE")
 	for _, b := range bookmarks {
 		location := "-"
 		if b.Location != "" {
@@ -46,8 +47,12 @@ func List(args []string) int {
 		if b.LastRun != "" {
 			lastRun = b.LastRun
 		}
-		fmt.Fprintf(w, "%s\t%d\t%d\t%s\t%s\t%s\n",
-			b.Slug, b.Chapters, b.Pages, location, lastRun, b.Title)
+		assumed := "-"
+		if b.AssumeSyncedThrough != "" {
+			assumed = discover.ChapterLabel(b.AssumeSyncedThrough)
+		}
+		fmt.Fprintf(w, "%d\t%s\t%d\t%d\t%s\t%s\t%s\t%s\n",
+			b.ID, b.Slug, b.Chapters, b.Pages, assumed, location, lastRun, b.Title)
 	}
 	_ = w.Flush()
 	return 0

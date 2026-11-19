@@ -88,6 +88,112 @@ func TestSyncSeriesIncremental(t *testing.T) {
 	}
 }
 
+func TestSyncSeriesAssumeSyncedThrough(t *testing.T) {
+	progress.SetEnabled(false)
+
+	var chapterRequests, imageRequests atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/series/test":
+			_, _ = w.Write([]byte(`<a href="/chapter/1">Chapter 1</a><a href="/chapter/2">Chapter 2</a><a href="/chapter/3">Chapter 3</a>`))
+		case "/chapter/1", "/chapter/2":
+			chapterRequests.Add(1)
+			_, _ = w.Write([]byte(`<img src="/img/old.png">`))
+		case "/chapter/3":
+			chapterRequests.Add(1)
+			_, _ = w.Write([]byte(`<img src="/img/3-1.png"><img src="/img/3-2.png">`))
+		default:
+			imageRequests.Add(1)
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write([]byte("img"))
+		}
+	}))
+	defer srv.Close()
+
+	st, err := state.Open(filepath.Join(t.TempDir(), "state.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	f := fetch.New()
+	defer f.Close()
+
+	bookmark := state.Bookmark{
+		Slug:                "test",
+		URL:                 srv.URL + "/series/test",
+		AssumeSyncedThrough: "002",
+	}
+	summary, err := SyncSeries(f, st, bookmark, t.TempDir(), false, false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Assumed != 2 || summary.Chapters != 3 || summary.New != 2 || summary.Skipped != 0 {
+		t.Fatalf("summary = %+v", summary)
+	}
+	if got := chapterRequests.Load(); got != 1 {
+		t.Fatalf("chapter requests = %d, want 1 (only chapter 3)", got)
+	}
+	if got := imageRequests.Load(); got != 2 {
+		t.Fatalf("image requests = %d, want 2", got)
+	}
+}
+
+func TestSyncSeriesAssumeException(t *testing.T) {
+	progress.SetEnabled(false)
+
+	var chapterRequests atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/series/test":
+			_, _ = w.Write([]byte(`<a href="/chapter/1">Chapter 1</a><a href="/chapter/2">Chapter 2</a>`))
+		case "/chapter/1", "/chapter/2":
+			chapterRequests.Add(1)
+			_, _ = w.Write([]byte(`<img src="/img/` + r.URL.Path[len("/chapter/"):] + `.png">`))
+		default:
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write([]byte("img"))
+		}
+	}))
+	defer srv.Close()
+
+	st, err := state.Open(filepath.Join(t.TempDir(), "state.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	f := fetch.New()
+	defer f.Close()
+
+	bookmark := state.Bookmark{
+		Slug:                "test",
+		URL:                 srv.URL + "/series/test",
+		AssumeSyncedThrough: "002",
+	}
+	if err := st.AddAssumeException("test", "001"); err != nil {
+		t.Fatal(err)
+	}
+
+	summary, err := SyncSeries(f, st, bookmark, t.TempDir(), false, false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Assumed != 1 || summary.Chapters != 2 || summary.New != 1 {
+		t.Fatalf("summary = %+v", summary)
+	}
+	if got := chapterRequests.Load(); got != 1 {
+		t.Fatalf("chapter requests = %d, want 1", got)
+	}
+	row, err := st.GetPage("test", "001", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row == nil {
+		t.Fatal("chapter 001 was not downloaded despite the exception")
+	}
+}
+
 func TestSeriesOutRootUsesTitle(t *testing.T) {
 	base := t.TempDir()
 	t.Setenv("IMGSYNC_OUTPUT", base)

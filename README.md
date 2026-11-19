@@ -31,33 +31,47 @@ imgsync add https://asurascans.com/comics/blade-of-the-discarded-7ba78ec7
 imgsync add -f urls.txt                      # one URL per line, # comments allowed
 imgsync list
 imgsync set-output ~/Pictures/ImgSync        # folder new chapters download to
-imgsync set-location <slug> <path>           # point a bookmark at its existing folder
+imgsync set-location 3 ~/Pictures/ImgSync    # point a bookmark at its existing folder
+imgsync set-location blade <path>            # unique slug prefix works too
 imgsync set-location <slug> <path> --dry-run # report only
-imgsync unsync <slug>                        # mark all chapters for re-download
-imgsync unsync <slug> "chapter 003" --dry-run
-imgsync remove <slug>                        # stop syncing, keep downloaded files
+imgsync set-location <id|slug> <path> --assume-synced-through 123
+imgsync assume-synced 3 123                  # trust chapters up to 123 as downloaded
+imgsync assume-synced 3 --clear              # remove the assumption
+imgsync unsync 3                             # mark all chapters for re-download
+imgsync unsync 3 "chapter 003" --dry-run
+imgsync remove 3                             # stop syncing, keep downloaded files
 
 imgsync run
-imgsync run --series <slug>                  # only one bookmark
+imgsync run --series 3                       # only one bookmark
 imgsync run --dry-run                        # show what would be downloaded
 imgsync run --verify                         # conditional GET for db-synced pages
 imgsync run --limit 10                       # max 10 new pages per bookmark
 imgsync run --no-progress                    # hide the progress bar
+imgsync run --verbose                        # show per-chapter indexing details
 ```
+
+Wherever a command takes a bookmark, you can use the `ID` shown by
+`imgsync list` (e.g. `3`), a unique slug prefix (e.g. `blade`), or the full
+slug. Ambiguous prefixes are rejected with the matching slugs.
 
 ## Progress
 
 On interactive terminals `imgsync run` shows a live progress bar on stderr,
-first while indexing chapter pages and then while downloading:
+first while indexing chapter pages and then while downloading. Both show the
+bookmark and the current chapter:
 
 ```
-blade of the discarded  [███████░░░░░░░░░░░░░░░░░]  31%  62/200 pages  3.1/s  ETA 1:24
+myst-might-mayhem  Chapter 116  [████████░░░░░░░░░░░░░░░░]  94%  116/123 chapters  ETA 0:04
+myst-might-mayhem  Chapter 116  [███░░░░░░░░░░░░░░░░░░░░░]  12/25 pages  3.1/s  ETA 0:04
 ```
 
 The ETA is based on the work known after indexing, so already-synced pages
 (which are skipped without a request) do not distort it. The bar is disabled
 automatically when stderr is redirected, when `TERM=dumb`, or when
 `IMGSYNC_NO_PROGRESS=1` is set; `--no-progress` turns it off per run.
+
+Per-chapter indexing details are only logged with `imgsync run --verbose` (or
+the global `-v` flag).
 
 ## Where files go
 
@@ -89,14 +103,15 @@ their stored page paths are updated automatically.
 
 ## Database is the single source of truth
 
-A page is considered synced when `state.sqlite` has a row for it. The tool does
+A page is considered synced when `state.sqlite` has a row for it, or when its
+chapter is at or below the bookmark's assumed cutoff. Otherwise the tool does
 not care whether the file still exists or where it was moved.
 
 - Moved or deleted files are **not** re-downloaded.
 - `imgsync unsync <slug> [chapter...]` deletes the synced rows for one or all
   chapters of a bookmark; the next `imgsync run` downloads them again (into the
   bookmark's current location/output folder).
-- `imgsync set-location <slug> <path>` points a bookmark at a folder that
+- `imgsync set-location <id|slug> <path>` points a bookmark at a folder that
   already contains downloaded chapters. It scans `Chapter NNN` folders, records
   the pages it finds in the DB, and reports:
 
@@ -104,6 +119,25 @@ not care whether the file still exists or where it was moved.
   - pages already in the DB (their stored paths are relinked to the new folder)
   - pages integrated into the DB (or "would integrate" with `--dry-run`)
   - pages the DB says are synced but are missing on disk
+
+### Trusting an existing range
+
+If a folder was downloaded by another tool and its page filenames do not match
+ImgSync's `001.webp` layout, tell ImgSync to trust everything up to a chapter
+instead of re-downloading it:
+
+```sh
+imgsync set-location <slug> <path> --assume-synced-through 123
+# or later:
+imgsync assume-synced <slug> 123
+imgsync assume-synced <slug> --clear
+```
+
+Chapters at or below the cutoff are skipped without fetching their chapter
+pages or images. Newer chapters sync normally. Individual chapters can be
+forced back into the download queue with `imgsync unsync <slug> <chapter>`;
+`imgsync unsync <slug>` clears the cutoff entirely. Assumed chapters are not
+verified, so missing pages inside them stay missing.
 
 State lives in `~/.local/share/imgsync/state.sqlite`; logs in
 `~/.local/share/imgsync/imgsync.log`; config in

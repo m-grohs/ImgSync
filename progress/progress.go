@@ -15,6 +15,7 @@ import (
 const (
 	barWidth     = 24
 	labelWidth   = 28
+	detailWidth  = 14
 	redrawPeriod = 100 * time.Millisecond
 )
 
@@ -50,6 +51,7 @@ func SetEnabled(v bool) {
 // Bar is a live progress line. Methods are safe for concurrent use.
 type Bar struct {
 	label    string
+	detail   string
 	unit     string
 	total    int
 	done     int
@@ -101,6 +103,17 @@ func (b *Bar) SetLabel(label string) {
 	}
 }
 
+// SetDetail replaces the secondary label (for example the current chapter)
+// shown between the label and the bar.
+func (b *Bar) SetDetail(detail string) {
+	mu.Lock()
+	defer mu.Unlock()
+	b.detail = detail
+	if enabled && active == b {
+		b.drawLocked()
+	}
+}
+
 // Finish renders the final state and releases the line for normal output.
 func (b *Bar) Finish() {
 	mu.Lock()
@@ -133,7 +146,7 @@ func (b *Bar) line() string {
 	if elapsed := time.Since(b.start); elapsed > 0 {
 		rate = float64(b.done) / elapsed.Seconds()
 	}
-	return barLine(b.label, b.unit, b.done, b.total, rate, eta)
+	return barLine(b.label, b.detail, b.unit, b.done, b.total, rate, eta)
 }
 
 func (b *Bar) eta() (time.Duration, bool) {
@@ -148,7 +161,7 @@ func (b *Bar) eta() (time.Duration, bool) {
 	return perItem * time.Duration(b.total-b.done), true
 }
 
-func barLine(label, unit string, done, total int, rate float64, eta string) string {
+func barLine(label, detail, unit string, done, total int, rate float64, eta string) string {
 	if total < 0 {
 		total = 0
 	}
@@ -174,10 +187,13 @@ func barLine(label, unit string, done, total int, rate float64, eta string) stri
 	if done > 0 && rate > 0 {
 		rateText = fmt.Sprintf("  %.1f/s", rate)
 	}
+	labelText := fmt.Sprintf("%-*s", labelWidth, truncateLabel(label, labelWidth))
+	if detail != "" {
+		labelText += fmt.Sprintf("  %-*s", detailWidth, truncateLabel(detail, detailWidth))
+	}
 	return fmt.Sprintf(
-		"%-*s  [%s]  %3d%%  %d/%d %s%s  ETA %s",
-		labelWidth, truncateLabel(label, labelWidth),
-		bar, pct, done, total, unit, rateText, eta,
+		"%s  [%s]  %3d%%  %d/%d %s%s  ETA %s",
+		labelText, bar, pct, done, total, unit, rateText, eta,
 	)
 }
 

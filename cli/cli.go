@@ -3,12 +3,10 @@ package cli
 import (
 	"fmt"
 	"io"
-	"log/slog"
 	"os"
 
 	"imgsync/commands"
-	"imgsync/config"
-	"imgsync/progress"
+	"imgsync/logging"
 )
 
 // Run dispatches the CLI. It returns the process exit code.
@@ -18,7 +16,7 @@ func Run(args []string) int {
 		verbose = true
 		args = args[1:]
 	}
-	setupLogging(verbose)
+	logging.Setup(verbose)
 
 	if len(args) == 0 {
 		usage(os.Stderr)
@@ -36,6 +34,8 @@ func Run(args []string) int {
 		return commands.SetOutput(args[1:])
 	case "set-location":
 		return commands.SetLocation(args[1:])
+	case "assume-synced":
+		return commands.AssumeSynced(args[1:])
 	case "unsync":
 		return commands.Unsync(args[1:])
 	case "run":
@@ -50,29 +50,23 @@ func Run(args []string) int {
 	}
 }
 
-func setupLogging(verbose bool) {
-	level := slog.LevelInfo
-	if verbose {
-		level = slog.LevelDebug
-	}
-	var w io.Writer = progress.Writer(os.Stderr)
-	if f, err := os.OpenFile(config.LogPath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); err == nil {
-		w = io.MultiWriter(progress.Writer(os.Stderr), f)
-	}
-	slog.SetDefault(slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: level})))
-}
-
 func usage(w io.Writer) {
 	fmt.Fprint(w, `imgsync - incremental image sync for comic series
 
 Usage:
   imgsync add <url...> [-f FILE]              register bookmark(s)
   imgsync list                                show registered bookmarks
-  imgsync remove <slug>                       stop syncing, keep downloaded files
+  imgsync remove <id|slug>                    stop syncing, keep downloaded files
   imgsync set-output <dir>                    set the folder new chapters download to
-  imgsync set-location <slug> <path>          point a bookmark at its folder [--dry-run]
-  imgsync unsync <slug> [chapter...]          mark chapter(s) unsynced [--dry-run]
-  imgsync run [--series SLUG] [--dry-run] [--verify] [--limit N] [--no-progress]
+  imgsync set-location <id|slug> <path>       point a bookmark at its folder [--dry-run]
+                                             [--assume-synced-through N]
+  imgsync assume-synced <id|slug> <chapter>   trust chapters up to N as downloaded
+  imgsync assume-synced <id|slug> --clear     remove the assumption
+  imgsync unsync <id|slug> [chapter...]       mark chapter(s) unsynced [--dry-run]
+  imgsync run [--series ID|SLUG] [--dry-run] [--verify] [--limit N] [--no-progress] [--verbose]
+
+A bookmark can be referenced by its list ID (e.g. 3), a unique slug prefix,
+or the full slug. "imgsync list" shows the IDs and slugs.
 
 The run command shows a progress bar with an ETA on interactive terminals.
 Set IMGSYNC_NO_PROGRESS=1 or pass --no-progress to hide it.

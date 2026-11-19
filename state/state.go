@@ -19,17 +19,19 @@ type State struct {
 
 // Bookmark is a registered series ("bookmark").
 type Bookmark struct {
-	Slug       string
-	SeriesID   string
-	URL        string
-	Title      string
-	Location   string
-	Enabled    bool
-	AddedAt    string
-	LastRun    string
-	LastResult string
-	Chapters   int
-	Pages      int
+	ID                  int64
+	Slug                string
+	SeriesID            string
+	URL                 string
+	Title               string
+	Location            string
+	AssumeSyncedThrough string
+	Enabled             bool
+	AddedAt             string
+	LastRun             string
+	LastResult          string
+	Chapters            int
+	Pages               int
 }
 
 // Page is a synced page row.
@@ -79,7 +81,66 @@ func Open(path string) (*State, error) {
 			return nil, err
 		}
 	}
+	if err := ensureColumn(db, "bookmarks", "assume_synced_through", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := ensureBookmarkIDs(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	return s, nil
+}
+
+// ensureBookmarkIDs assigns a stable ID to every bookmark that does not have
+// one yet (for example bookmarks created before IDs were introduced).
+func ensureBookmarkIDs(db *sql.DB) error {
+	_, err := db.Exec(`
+		INSERT INTO bookmark_ids(slug)
+		SELECT b.slug FROM bookmarks b
+		WHERE NOT EXISTS (SELECT 1 FROM bookmark_ids i WHERE i.slug = b.slug)
+		ORDER BY b.added_at, b.slug`)
+	return err
+}
+
+// ensureColumn adds a column to an existing table when it is missing. It is
+// used for backwards-compatible schema upgrades.
+func ensureColumn(db *sql.DB, table, column, definition string) error {
+	rows, err := db.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		return err
+	}
+	found := false
+	for rows.Next() {
+		var (
+			cid        int
+			name       string
+			ctype      string
+			notnull    int
+			dflt       sql.NullString
+			primaryKey int
+		)
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &primaryKey); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		if name == column {
+			found = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	// The pool has a single connection, so close the rows before executing.
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if found {
+		return nil
+	}
+	_, err = db.Exec(`ALTER TABLE ` + table + ` ADD COLUMN ` + column + ` ` + definition)
+	return err
 }
 
 func hasLegacySchema(db *sql.DB) (bool, error) {
@@ -108,8 +169,9 @@ func (s *State) Close() error { return s.db.Close() }
 // -- bookmarks ---------------------------------------------------------------
 
 const bookmarkColumns = `
+	COALESCE((SELECT i.id FROM bookmark_ids i WHERE i.slug = b.slug), 0),
 	b.slug, COALESCE(b.series_id, ''), b.url, COALESCE(b.title, ''),
-	COALESCE(b.location, ''), b.enabled, b.added_at,
+	COALESCE(b.location, ''), COALESCE(b.assume_synced_through, ''), b.enabled, b.added_at,
 	COALESCE(b.last_run, ''), COALESCE(b.last_result, ''),
 	(SELECT COUNT(*) FROM pages p WHERE p.slug = b.slug AND p.status = 'ok'),
 	(SELECT COUNT(DISTINCT p.chapter) FROM pages p WHERE p.slug = b.slug AND p.status = 'ok')`
@@ -122,8 +184,8 @@ func scanBookmark(r scanner) (*Bookmark, error) {
 	b := &Bookmark{}
 	var enabled int
 	err := r.Scan(
-		&b.Slug, &b.SeriesID, &b.URL, &b.Title, &b.Location, &enabled,
-		&b.AddedAt, &b.LastRun, &b.LastResult, &b.Pages, &b.Chapters,
+		&b.ID, &b.Slug, &b.SeriesID, &b.URL, &b.Title, &b.Location, &b.AssumeSyncedThrough,
+		&enabled, &b.AddedAt, &b.LastRun, &b.LastResult, &b.Pages, &b.Chapters,
 	)
 	if err != nil {
 		return nil, err
@@ -144,13 +206,36 @@ func (s *State) UpsertBookmark(slug, seriesID, rawURL, title string) (bool, erro
 			`UPDATE bookmarks SET url = ?, series_id = ?, title = CASE WHEN ? <> '' THEN ? ELSE title END, enabled = 1 WHERE slug = ?`,
 			rawURL, seriesID, title, title, slug,
 		)
-		return false, err
+		if err != nil {
+			return false, err
+		}
+		return false, s.ensureBookmarkID(slug)
 	}
 	_, err := s.db.Exec(
 		`INSERT INTO bookmarks(slug, series_id, url, title, enabled, added_at) VALUES(?,?,?,?,1,?)`,
 		slug, seriesID, rawURL, title, Now(),
 	)
-	return true, err
+	if err != nil {
+		return false, err
+	}
+	return true, s.ensureBookmarkID(slug)
+}
+
+// ensureBookmarkID reserves a stable ID for a bookmark without changing an
+// existing one.
+func (s *State) ensureBookmarkID(slug string) error {
+	_, err := s.db.Exec(
+		`INSERT INTO bookmark_ids(slug) VALUES(?) ON CONFLICT(slug) DO NOTHING`,
+		slug,
+	)
+	return err
+}
+
+// BookmarkID returns the stable list ID of a bookmark.
+func (s *State) BookmarkID(slug string) (int64, error) {
+	var id int64
+	err := s.db.QueryRow(`SELECT id FROM bookmark_ids WHERE slug = ?`, slug).Scan(&id)
+	return id, err
 }
 
 // ListBookmarks returns all bookmarks with chapter/page counts.
@@ -193,6 +278,70 @@ func (s *State) GetBookmark(slug string) (*Bookmark, error) {
 	return b, nil
 }
 
+// ResolveBookmark looks a bookmark up by exact slug, numeric list ID or a
+// unique slug prefix (in that order). It returns nil when nothing matches and
+// an error listing the candidates when a prefix is ambiguous.
+func (s *State) ResolveBookmark(ref string) (*Bookmark, error) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return nil, nil
+	}
+
+	if b, err := s.GetBookmark(ref); err != nil || b != nil {
+		return b, err
+	}
+
+	if id, err := strconv.ParseInt(ref, 10, 64); err == nil {
+		row := s.db.QueryRow(
+			`SELECT `+bookmarkColumns+` FROM bookmarks b WHERE b.slug = (SELECT slug FROM bookmark_ids WHERE id = ?)`,
+			id,
+		)
+		b, err := scanBookmark(row)
+		if err == nil {
+			return b, nil
+		}
+		if err != sql.ErrNoRows {
+			return nil, err
+		}
+	}
+
+	rows, err := s.db.Query(
+		`SELECT `+bookmarkColumns+` FROM bookmarks b
+		 WHERE substr(b.slug, 1, length(?)) = ?
+		 ORDER BY b.slug LIMIT 5`,
+		ref, ref,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var matches []Bookmark
+	for rows.Next() {
+		b, err := scanBookmark(rows)
+		if err != nil {
+			return nil, err
+		}
+		matches = append(matches, *b)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	switch len(matches) {
+	case 0:
+		return nil, nil
+	case 1:
+		return &matches[0], nil
+	default:
+		names := make([]string, len(matches))
+		for i, m := range matches {
+			names[i] = m.Slug
+		}
+		return nil, fmt.Errorf("ambiguous bookmark %q: matches %s", ref, strings.Join(names, ", "))
+	}
+}
+
 // RemoveBookmark deletes a bookmark (downloaded files are kept).
 func (s *State) RemoveBookmark(slug string) (bool, error) {
 	res, err := s.db.Exec(`DELETE FROM bookmarks WHERE slug = ?`, slug)
@@ -200,12 +349,66 @@ func (s *State) RemoveBookmark(slug string) (bool, error) {
 		return false, err
 	}
 	n, err := res.RowsAffected()
-	return n > 0, err
+	if err != nil {
+		return false, err
+	}
+	if n > 0 {
+		if _, err := s.db.Exec(`DELETE FROM assume_exceptions WHERE slug = ?`, slug); err != nil {
+			return true, err
+		}
+		if _, err := s.db.Exec(`DELETE FROM bookmark_ids WHERE slug = ?`, slug); err != nil {
+			return true, err
+		}
+	}
+	return n > 0, nil
 }
 
 // SetLocation points a bookmark at its filesystem folder.
 func (s *State) SetLocation(slug, path string) error {
 	_, err := s.db.Exec(`UPDATE bookmarks SET location = ? WHERE slug = ?`, path, slug)
+	return err
+}
+
+// SetAssumeSyncedThrough treats every chapter up to and including number as
+// already downloaded without storing page rows for it.
+func (s *State) SetAssumeSyncedThrough(slug, number string) error {
+	_, err := s.db.Exec(`UPDATE bookmarks SET assume_synced_through = ? WHERE slug = ?`, number, slug)
+	return err
+}
+
+// ClearAssumeSynced removes the chapter cutoff and all of its exceptions.
+func (s *State) ClearAssumeSynced(slug string) error {
+	if _, err := s.db.Exec(`DELETE FROM assume_exceptions WHERE slug = ?`, slug); err != nil {
+		return err
+	}
+	_, err := s.db.Exec(`UPDATE bookmarks SET assume_synced_through = '' WHERE slug = ?`, slug)
+	return err
+}
+
+// AssumeExceptions returns the chapters that override the bookmark's cutoff.
+func (s *State) AssumeExceptions(slug string) (map[string]bool, error) {
+	rows, err := s.db.Query(`SELECT chapter FROM assume_exceptions WHERE slug = ?`, slug)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var chapter string
+		if err := rows.Scan(&chapter); err != nil {
+			return nil, err
+		}
+		out[chapter] = true
+	}
+	return out, rows.Err()
+}
+
+// AddAssumeException forces a chapter below the cutoff to be downloaded.
+func (s *State) AddAssumeException(slug, chapter string) error {
+	_, err := s.db.Exec(
+		`INSERT INTO assume_exceptions(slug, chapter) VALUES(?, ?) ON CONFLICT(slug, chapter) DO NOTHING`,
+		slug, chapter,
+	)
 	return err
 }
 

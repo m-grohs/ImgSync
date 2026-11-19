@@ -8,6 +8,7 @@ import (
 
 	"imgsync/config"
 	"imgsync/fetch"
+	"imgsync/logging"
 	"imgsync/progress"
 	"imgsync/state"
 	"imgsync/sync"
@@ -18,17 +19,20 @@ func Run(args []string) int {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	var series multiFlag
-	fs.Var(&series, "series", "only sync this bookmark slug (repeatable)")
+	fs.Var(&series, "series", "only sync this bookmark: id, unique slug prefix or slug (repeatable)")
 	dryRun := fs.Bool("dry-run", false, "show what would download")
 	verify := fs.Bool("verify", false, "conditional GET for pages the db marks synced")
 	limit := fs.Int("limit", -1, "stop after N new pages per bookmark")
 	noProgress := fs.Bool("no-progress", false, "hide the progress bar")
+	verbose := fs.Bool("verbose", false, "show per-chapter details while indexing")
+	fs.BoolVar(verbose, "v", false, "alias for --verbose")
 	if _, err := parseArgs(fs, args); err != nil {
 		return 2
 	}
 	if *noProgress {
 		progress.SetEnabled(false)
 	}
+	logging.SetVerbose(*verbose)
 
 	var limitPtr *int
 	if *limit >= 0 {
@@ -41,6 +45,19 @@ func Run(args []string) int {
 		return 1
 	}
 	defer st.Close()
+
+	for i, ref := range series {
+		bookmark, err := st.ResolveBookmark(ref)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			return 1
+		}
+		if bookmark == nil {
+			fmt.Fprintf(os.Stderr, "error: unknown bookmark: %s\n", ref)
+			return 1
+		}
+		series[i] = bookmark.Slug
+	}
 
 	f := fetch.New()
 	defer f.Close()

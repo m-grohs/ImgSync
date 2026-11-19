@@ -24,6 +24,7 @@ const batchSize = 3
 type Summary struct {
 	New      int
 	Skipped  int
+	Assumed  int
 	Failed   int
 	Locked   int
 	Chapters int
@@ -33,6 +34,7 @@ type Summary struct {
 func (s *Summary) Add(o Summary) {
 	s.New += o.New
 	s.Skipped += o.Skipped
+	s.Assumed += o.Assumed
 	s.Failed += o.Failed
 	s.Locked += o.Locked
 	s.Chapters += o.Chapters
@@ -41,8 +43,8 @@ func (s *Summary) Add(o Summary) {
 // Text renders the summary line.
 func (s *Summary) Text() string {
 	return fmt.Sprintf(
-		"+%d new, %d unchanged, %d locked, %d failed, %d chapters",
-		s.New, s.Skipped, s.Locked, s.Failed, s.Chapters,
+		"+%d new, %d unchanged, %d assumed, %d locked, %d failed, %d chapters",
+		s.New, s.Skipped, s.Assumed, s.Locked, s.Failed, s.Chapters,
 	)
 }
 
@@ -237,6 +239,16 @@ func SyncSeries(
 		return summary, fmt.Errorf("no chapters found - the site layout may have changed")
 	}
 
+	// Chapters up to the bookmark's cutoff are trusted as already downloaded.
+	// Individual exceptions (set by unsync) still download normally.
+	var assumeExceptions map[string]bool
+	if bookmark.AssumeSyncedThrough != "" {
+		assumeExceptions, err = st.AssumeExceptions(slug)
+		if err != nil {
+			return summary, err
+		}
+	}
+
 	// Without verification, pages already in the database are skipped locally.
 	// They are not part of the download work, so keep them out of the bar total.
 	needsSynced := !verify || dryRun
@@ -253,8 +265,20 @@ func SyncSeries(
 	// download bar an exact total.
 	var plans []chapterPlan
 	pendingTotal := 0
-	indexBar := progress.New("indexing "+slug, "chapters", len(chapters))
+	indexBar := progress.New(slug, "chapters", len(chapters))
 	for _, ref := range chapters {
+		indexBar.SetDetail(discover.ChapterLabel(ref.Number))
+
+		if bookmark.AssumeSyncedThrough != "" &&
+			!assumeExceptions[ref.Number] &&
+			discover.ChapterAtOrBefore(ref.Number, bookmark.AssumeSyncedThrough) {
+			slog.Debug("chapter assumed synced", "bookmark", slug, "chapter", ref.Number)
+			summary.Assumed++
+			summary.Chapters++
+			indexBar.Add(1)
+			continue
+		}
+
 		if limit != nil && *limit <= 0 {
 			slog.Info("download limit reached", "bookmark", slug)
 			break
@@ -264,6 +288,7 @@ func SyncSeries(
 			break
 		}
 
+		slog.Debug("indexing chapter", "bookmark", slug, "chapter", ref.Number)
 		chapterURL := resolveURL(bookmark.URL, ref.Path)
 		chapterDoc, err := f.GetText(chapterURL)
 		if err != nil {
@@ -323,6 +348,7 @@ func SyncSeries(
 		}
 		ref := plan.ref
 		chapter := plan.chapter
+		bar.SetDetail(discover.ChapterLabel(ref.Number))
 
 		if err := st.SetChapter(slug, ref.Number, chapter.URL, "ok", len(chapter.Pages)); err != nil {
 			slog.Error("state update failed", "bookmark", slug, "chapter", ref.Number, "error", err)

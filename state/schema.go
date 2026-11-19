@@ -10,10 +10,22 @@ var schema = []string{
 		url         TEXT NOT NULL,
 		title       TEXT,
 		location    TEXT,
+		assume_synced_through TEXT NOT NULL DEFAULT '',
 		enabled     INTEGER NOT NULL DEFAULT 1,
 		added_at    TEXT NOT NULL,
 		last_run    TEXT,
 		last_result TEXT
+	);`,
+
+	`CREATE TABLE IF NOT EXISTS bookmark_ids (
+		id   INTEGER PRIMARY KEY AUTOINCREMENT,
+		slug TEXT NOT NULL UNIQUE
+	);`,
+
+	`CREATE TABLE IF NOT EXISTS assume_exceptions (
+		slug    TEXT NOT NULL,
+		chapter TEXT NOT NULL,
+		PRIMARY KEY (slug, chapter)
 	);`,
 
 	`CREATE TABLE IF NOT EXISTS chapters (

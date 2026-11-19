@@ -29,7 +29,7 @@ func TestFormatDuration(t *testing.T) {
 }
 
 func TestBarLine(t *testing.T) {
-	line := barLine("series", "pages", 5, 10, 2.5, "0:05")
+	line := barLine("series", "Chapter 005", "pages", 5, 10, 2.5, "0:05")
 	for _, want := range []string{
 		"series",
 		"[████████████░░░░░░░░░░░░]",
@@ -42,10 +42,13 @@ func TestBarLine(t *testing.T) {
 			t.Errorf("barLine() = %q, missing %q", line, want)
 		}
 	}
+	if !strings.Contains(line, "Chapter 005") {
+		t.Errorf("barLine() = %q, missing detail", line)
+	}
 }
 
 func TestBarLineBeforeFirstItem(t *testing.T) {
-	line := barLine("series", "pages", 0, 10, 0, "--")
+	line := barLine("series", "", "pages", 0, 10, 0, "--")
 	for _, want := range []string{"  0%", "0/10 pages", "ETA --"} {
 		if !strings.Contains(line, want) {
 			t.Errorf("barLine() = %q, missing %q", line, want)
@@ -57,7 +60,7 @@ func TestBarLineBeforeFirstItem(t *testing.T) {
 }
 
 func TestBarLineClampsOvershoot(t *testing.T) {
-	line := barLine("series", "pages", 20, 10, 0, "0:00")
+	line := barLine("series", "", "pages", 20, 10, 0, "0:00")
 	for _, want := range []string{"100%", "10/10 pages"} {
 		if !strings.Contains(line, want) {
 			t.Errorf("barLine() = %q, missing %q", line, want)

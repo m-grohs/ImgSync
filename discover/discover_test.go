@@ -131,6 +131,24 @@ func TestNormalizeChapter(t *testing.T) {
 	}
 }
 
+func TestChapterAtOrBefore(t *testing.T) {
+	cases := []struct {
+		a, b string
+		want bool
+	}{
+		{"001", "123", true},
+		{"123", "123", true},
+		{"124", "123", false},
+		{"12.5", "12.5", true},
+		{"12.6", "12.5", false},
+	}
+	for _, tc := range cases {
+		if got := ChapterAtOrBefore(tc.a, tc.b); got != tc.want {
+			t.Errorf("ChapterAtOrBefore(%q, %q) = %v, want %v", tc.a, tc.b, got, tc.want)
+		}
+	}
+}
+
 func TestDecodeAstro(t *testing.T) {
 	got := decodeAstro(map[string]any{
 		"a": []any{0.0, 1.0},

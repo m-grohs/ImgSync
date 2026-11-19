@@ -76,7 +76,12 @@ func Add(args []string) int {
 		if !created {
 			verb = "updated"
 		}
-		fmt.Println(strings.TrimRight(fmt.Sprintf("%s: %s  %s", verb, slug, title), " "))
+		id, idErr := st.BookmarkID(slug)
+		if idErr != nil {
+			fmt.Println(strings.TrimRight(fmt.Sprintf("%s: %s  %s", verb, slug, title), " "))
+			continue
+		}
+		fmt.Println(strings.TrimRight(fmt.Sprintf("%s: #%d  %s  %s", verb, id, slug, title), " "))
 	}
 	return rc
 }

@@ -176,6 +176,16 @@ func ChapterLess(a, b string) bool {
 	return a < b
 }
 
+// ChapterAtOrBefore reports whether a is less than or equal to b.
+func ChapterAtOrBefore(a, b string) bool {
+	fa, ea := strconv.ParseFloat(a, 64)
+	fb, eb := strconv.ParseFloat(b, 64)
+	if ea == nil && eb == nil {
+		return fa <= fb
+	}
+	return a <= b
+}
+
 // SortChapters sorts chapter numbers ascending.
 func SortChapters(nums []string) {
 	sort.Slice(nums, func(i, j int) bool { return ChapterLess(nums[i], nums[j]) })
