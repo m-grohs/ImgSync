@@ -1,3 +1,6 @@
 /imgsync
 /dist/
 *.test
+
+# Local-only maintainer release notes
+/RELEASING.local.md

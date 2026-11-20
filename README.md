@@ -6,23 +6,113 @@ what has been synced.
 
 ## Install
 
-Install from this directory: 
+### Download a release (recommended)
 
-```
-go install
+Prebuilt binaries are published on the
+[GitHub Releases page](https://github.com/m-grohs/ImgSync/releases/latest).
+Each release contains:
+
+| Asset | Platform |
+| --- | --- |
+| `imgsync-<version>-windows-amd64.exe` | Windows x86-64 (Intel/AMD) |
+| `imgsync-<version>-windows-arm64.exe` | Windows ARM64 (Snapdragon) |
+| `imgsync-<version>-linux-amd64` | Linux x86-64 |
+| `imgsync-<version>-linux-arm64` | Linux ARM64 |
+| `imgsync-<version>-darwin-amd64` | macOS Intel |
+| `imgsync-<version>-darwin-arm64` | macOS Apple Silicon |
+| `SHA256SUMS-<version>.txt` | Checksums for all binaries |
+
+On Windows, download the `.exe` for your CPU, then in PowerShell (replace the
+version in the filename with the one you downloaded):
+
+```powershell
+$binDir = Join-Path $env:USERPROFILE 'bin'
+New-Item -ItemType Directory -Force $binDir | Out-Null
+Move-Item "$env:USERPROFILE\Downloads\imgsync-v0.1.0-windows-amd64.exe" "$binDir\imgsync.exe"
+
+# Add the folder to your user PATH once, then use it in this shell too.
+$userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+if ($userPath -notlike "*$binDir*") {
+  [Environment]::SetEnvironmentVariable('Path', "$userPath;$binDir", 'User')
+}
+$env:Path += ";$binDir"
+imgsync version
 ```
 
-Build from this directory:
+Newly opened terminals pick up the PATH change automatically. You can also do
+the same via the GUI: **Settings → System → About → Advanced system settings →
+Environment variables → User variables → Path → New**, and add
+`%USERPROFILE%\bin`. Do not copy the exe into `C:\Windows\System32`.
+
+On macOS/Linux, download the binary for your platform, then:
 
 ```sh
-go build -o  dist/
+mkdir -p ~/.local/bin
+mv ~/Downloads/imgsync-v0.1.0-linux-amd64 ~/.local/bin/imgsync   # use your downloaded file
+chmod +x ~/.local/bin/imgsync
+
+# Only needed if ~/.local/bin is not already on your PATH (use ~/.bashrc on Linux Bash):
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
 ```
 
-Optionally put the binary on your PATH:
+Open a new terminal (or run `source ~/.zshrc`) and run `imgsync version`. The
+output includes the release version, commit, and platform, for example
+`imgsync v0.1.0 (a1b2c3d) windows/amd64`.
+
+### Install with Go (from a checkout)
+
+Requires Go 1.26 or newer. Run `go install` from the repository root:
 
 ```sh
-ln -s "$PWD/dist/imgsync" ~/.local/bin/imgsync
+git clone https://github.com/m-grohs/ImgSync.git
+cd ImgSync
+go install .
 ```
+
+`go install .` places the binary in `$(go env GOPATH)/bin` — normally
+`~/go/bin` (Windows: `%USERPROFILE%\go\bin`) — **not** in the current
+directory. Add that folder to your PATH:
+
+```powershell
+# Windows PowerShell
+$goBin = Join-Path (go env GOPATH) 'bin'
+$userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+if ($userPath -notlike "*$goBin*") {
+  [Environment]::SetEnvironmentVariable('Path', "$userPath;$goBin", 'User')
+}
+$env:Path += ";$goBin"
+imgsync version
+```
+
+```sh
+# macOS/Linux (use ~/.bashrc if your shell is Bash)
+echo 'export PATH="$HOME/go/bin:$PATH"' >> ~/.zshrc
+```
+
+Because this module's import path is just `imgsync`, `go install imgsync@latest`
+does not work; install from a checkout as above, or use a release binary.
+
+### Build the exe yourself
+
+From the repository root:
+
+```powershell
+# Windows PowerShell — produces dist\imgsync.exe
+go build -o dist/imgsync.exe .
+.\dist\imgsync.exe version
+```
+
+```sh
+# macOS/Linux — produces dist/imgsync
+go build -o dist/imgsync .
+./dist/imgsync version
+```
+
+To run the binary from any directory, copy it into a folder that is already on
+your PATH (for example `%USERPROFILE%\bin` on Windows or `~/.local/bin` on
+macOS/Linux), and add that folder to PATH using the commands above. A locally
+built binary reports `imgsync dev (...)`; release binaries report their
+`vX.Y.Z` tag.
 
 ## Usage
 

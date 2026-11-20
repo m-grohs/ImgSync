@@ -3,7 +3,11 @@ package commands
 import (
 	"flag"
 	"reflect"
+	"runtime"
+	"strings"
 	"testing"
+
+	"imgsync/internal/version"
 )
 
 func TestParseArgsFlagsAfterPositionals(t *testing.T) {
@@ -37,6 +41,20 @@ func TestVersion(t *testing.T) {
 	}
 	if code := Version([]string{"extra"}); code != 2 {
 		t.Fatalf("Version(extra) = %d", code)
+	}
+}
+
+func TestVersionStringUsesInjectedVersion(t *testing.T) {
+	old := version.Version
+	version.Version = "v9.8.7"
+	t.Cleanup(func() { version.Version = old })
+
+	got := VersionString()
+	if !strings.HasPrefix(got, "imgsync v9.8.7 ") {
+		t.Fatalf("VersionString() = %q, want injected version", got)
+	}
+	if !strings.Contains(got, runtime.GOOS+"/"+runtime.GOARCH) {
+		t.Fatalf("VersionString() = %q, want platform", got)
 	}
 }
 
