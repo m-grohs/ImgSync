@@ -1,6 +1,7 @@
 package progress
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 	"time"
@@ -63,6 +64,47 @@ func TestBarLine(t *testing.T) {
 	}
 	if !strings.Contains(line, "Chapter 005") {
 		t.Errorf("barLine() = %q, missing detail", line)
+	}
+}
+
+func TestBarLineLayout(t *testing.T) {
+	index := barLine("Indexing", "", "series", 3, 8, 1.5, "0:04")
+	if !strings.Contains(index, "Indexing  3/8 series  [") {
+		t.Errorf("index line has unexpected layout: %q", index)
+	}
+	chapter := barLine("Blade & Soul", "Chapter 012", "pages", 8, 20, 3.1, "0:04")
+	if !strings.Contains(chapter, "Blade & Soul") || !strings.Contains(chapter, "Chapter 012") {
+		t.Errorf("chapter line is missing its labels: %q", chapter)
+	}
+	if strings.Index(chapter, "8/20 pages") > strings.Index(chapter, "[") {
+		t.Errorf("counts should precede the bar: %q", chapter)
+	}
+}
+
+func TestFinishedBarsStack(t *testing.T) {
+	var buf bytes.Buffer
+	mu.Lock()
+	wasEnabled, wasOut, wasActive := enabled, out, active
+	enabled, out, active = true, &buf, nil
+	mu.Unlock()
+	t.Cleanup(func() {
+		mu.Lock()
+		enabled, out, active = wasEnabled, wasOut, wasActive
+		mu.Unlock()
+	})
+
+	first := New("Series", "Chapter 001", "pages", 2)
+	first.Finish()
+	second := New("Series", "Chapter 002", "pages", 1)
+	second.Finish()
+
+	text := strings.ReplaceAll(buf.String(), "\r\x1b[K", "")
+	lines := strings.Split(strings.TrimSuffix(text, "\n"), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("finished bars produced %d lines, want 2: %q", len(lines), text)
+	}
+	if !strings.Contains(lines[0], "Chapter 001") || !strings.Contains(lines[1], "Chapter 002") {
+		t.Errorf("chapter lines are not stacked in order: %q", lines)
 	}
 }
 

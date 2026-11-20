@@ -15,7 +15,7 @@ import (
 
 const (
 	barWidth     = 24
-	labelWidth   = 28
+	labelWidth   = 32
 	detailWidth  = 14
 	redrawPeriod = 100 * time.Millisecond
 )
@@ -24,6 +24,7 @@ var (
 	mu      sync.Mutex
 	enabled = detectEnabled()
 	active  *Bar
+	out     io.Writer = os.Stderr
 )
 
 func detectEnabled() bool {
@@ -62,7 +63,7 @@ func SetEnabled(v bool) {
 	defer mu.Unlock()
 	enabled = v
 	if !v && active != nil {
-		fmt.Fprint(os.Stderr, "\r\x1b[K")
+		fmt.Fprint(out, "\r\x1b[K")
 		active = nil
 	}
 }
@@ -79,10 +80,11 @@ type Bar struct {
 	finished bool
 }
 
-// New starts a bar that counts total items. A non-positive total disables the
-// bar, which keeps "nothing to do" runs quiet.
-func New(label, unit string, total int) *Bar {
-	b := &Bar{label: label, unit: unit, total: total, start: time.Now()}
+// New starts a bar that counts total items. label and detail are the two
+// columns at the start of the line; an empty detail leaves the line compact.
+// A non-positive total disables the bar, which keeps "nothing to do" runs quiet.
+func New(label, detail, unit string, total int) *Bar {
+	b := &Bar{label: label, detail: detail, unit: unit, total: total, start: time.Now()}
 	mu.Lock()
 	defer mu.Unlock()
 	if enabled && total > 0 {
@@ -144,7 +146,7 @@ func (b *Bar) Finish() {
 	if !enabled || active != b {
 		return
 	}
-	fmt.Fprint(os.Stderr, "\r\x1b[K", b.line(), "\n")
+	fmt.Fprint(out, "\r\x1b[K", b.line(), "\n")
 	active = nil
 }
 
@@ -153,7 +155,7 @@ func (b *Bar) drawLocked() {
 		return
 	}
 	b.lastDraw = time.Now()
-	fmt.Fprint(os.Stderr, "\r\x1b[K", b.line())
+	fmt.Fprint(out, "\r\x1b[K", b.line())
 }
 
 func (b *Bar) line() string {
@@ -206,13 +208,13 @@ func barLine(label, detail, unit string, done, total int, rate float64, eta stri
 	if done > 0 && rate > 0 {
 		rateText = fmt.Sprintf("  %.1f/s", rate)
 	}
-	labelText := fmt.Sprintf("%-*s", labelWidth, truncateLabel(label, labelWidth))
+	labelText := truncateLabel(label, labelWidth)
 	if detail != "" {
-		labelText += fmt.Sprintf("  %-*s", detailWidth, truncateLabel(detail, detailWidth))
+		labelText += "  " + truncateLabel(detail, detailWidth)
 	}
 	return fmt.Sprintf(
-		"%s  [%s]  %3d%%  %d/%d %s%s  ETA %s",
-		labelText, bar, pct, done, total, unit, rateText, eta,
+		"%s  %d/%d %s  [%s]  %3d%%%s  ETA %s",
+		labelText, done, total, unit, bar, pct, rateText, eta,
 	)
 }
 

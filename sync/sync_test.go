@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	stdsync "sync"
 	"sync/atomic"
 	"testing"
 
@@ -20,6 +21,15 @@ func disableProgress(t *testing.T) {
 	was := progress.Enabled()
 	progress.SetEnabled(false)
 	t.Cleanup(func() { progress.SetEnabled(was) })
+}
+
+func TestDisplayName(t *testing.T) {
+	if got := displayName(state.Bookmark{Title: "Blade and Soul", Slug: "blade"}); got != "Blade and Soul" {
+		t.Errorf("displayName(title) = %q, want title", got)
+	}
+	if got := displayName(state.Bookmark{Slug: "blade"}); got != "blade" {
+		t.Errorf("displayName(no title) = %q, want slug", got)
+	}
 }
 
 func TestPendingPages(t *testing.T) {
@@ -484,6 +494,69 @@ func TestSyncAllLimitIsPerBookmark(t *testing.T) {
 	}
 	if got := imageRequests.Load(); got != 2 {
 		t.Fatalf("image requests = %d, want 2", got)
+	}
+}
+
+func TestSyncAllIndexesAllSeriesBeforeDownloading(t *testing.T) {
+	disableProgress(t)
+	t.Setenv("IMGSYNC_OUTPUT", t.TempDir())
+
+	var mu stdsync.Mutex
+	var events []string
+	record := func(event string) {
+		mu.Lock()
+		events = append(events, event)
+		mu.Unlock()
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/series/a"), strings.HasSuffix(r.URL.Path, "/series/b"):
+			record("series")
+			_, _ = w.Write([]byte(`<a href="/chapter/1">Chapter 1</a>`))
+		case strings.HasPrefix(r.URL.Path, "/chapter/"):
+			record("chapter")
+			_, _ = w.Write([]byte(`<img src="/img/page.png">`))
+		default:
+			record("image")
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write([]byte("img"))
+		}
+	}))
+	defer srv.Close()
+
+	st, err := state.Open(filepath.Join(t.TempDir(), "state.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	for _, slug := range []string{"a", "b"} {
+		if _, err := st.UpsertBookmark(slug, "id", srv.URL+"/series/"+slug, slug); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f := fetch.New()
+	defer f.Close()
+
+	if _, failures, err := SyncAll(t.Context(), f, st, nil, false, false, nil); err != nil || len(failures) != 0 {
+		t.Fatalf("SyncAll: failures = %v, err = %v", failures, err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	lastIndex, firstDownload := -1, len(events)
+	for i, event := range events {
+		if event == "series" || event == "chapter" {
+			lastIndex = i
+		}
+		if event == "image" && i < firstDownload {
+			firstDownload = i
+		}
+	}
+	if lastIndex == -1 || firstDownload == len(events) {
+		t.Fatalf("incomplete request log: %v", events)
+	}
+	if lastIndex > firstDownload {
+		t.Errorf("indexing and downloads interleaved: %v", events)
 	}
 }
 

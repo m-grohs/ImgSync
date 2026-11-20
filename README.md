@@ -152,19 +152,26 @@ slug. Ambiguous prefixes are rejected with the matching slugs.
 
 ## Progress
 
-On interactive terminals `imgsync run` shows a live progress bar on stderr,
-first while indexing chapter pages and then while downloading. Both show the
-bookmark and the current chapter:
+On interactive terminals `imgsync run` shows live progress bars on stderr.
+First every enabled series is indexed under one shared bar that counts series:
 
 ```
-myst-might-mayhem  Chapter 116  [████████░░░░░░░░░░░░░░░░]  94%  116/123 chapters  ETA 0:04
-myst-might-mayhem  Chapter 116  [███░░░░░░░░░░░░░░░░░░░░░]  12/25 pages  3.1/s  ETA 0:04
+Indexing  3/8 series  [████████░░░░░░░░░░░░]  37%  1.2/s  ETA 0:04
 ```
 
-The ETA is based on the work known after indexing, so already-synced pages
-(which are skipped without a request) do not distort it. The bar is disabled
+Then the chapters are downloaded. Every chapter gets a bar of its own and
+finished lines stay on screen, one below the other:
+
+```
+Blade and Soul  Chapter 011  20/20 pages  [████████████████████████]  100%  4.0/s  ETA 0:00
+Blade and Soul  Chapter 012  12/25 pages  [██████████░░░░░░░░░░░░░]  48%  3.1/s  ETA 0:04
+```
+
+The series name is the bookmark title, falling back to its slug. The ETA is
+based on the work known after indexing, so already-synced pages (which are
+skipped without a request) do not distort it. The bars are disabled
 automatically when stderr is redirected, when `TERM=dumb`, or when
-`IMGSYNC_NO_PROGRESS=1` is set; `--no-progress` turns it off per run.
+`IMGSYNC_NO_PROGRESS=1` is set; `--no-progress` turns them off per run.
 
 Per-chapter indexing details are only logged with `imgsync run --verbose` (or
 the global `-v` flag).
