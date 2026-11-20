@@ -261,22 +261,31 @@ func SortChapters(nums []string) { slices.SortFunc(nums, ChapterCompare) }
 // DiscoverChapters returns chapter numbers and paths sorted ascending.
 func DiscoverChapters(doc string) []ChapterRef {
 	byNumber := map[string]string{}
+	seenPath := map[string]bool{}
 	for _, m := range hrefRe.FindAllStringSubmatch(doc, -1) {
 		if cm := chapterPathRe.FindStringSubmatch(m[1]); cm != nil {
 			num := NormalizeChapter(cm[1])
 			if _, ok := byNumber[num]; !ok {
 				byNumber[num] = m[1]
 			}
+			seenPath[m[1]] = true
 		}
 	}
 	// Merge link-text matches instead of only using them as an all-or-nothing
 	// fallback: a page may mix /chapter/N links with text-only chapter links.
+	// A link with a usable /chapter/N path is already authoritative; parsing its
+	// text as well can mistake an adjacent date ("Chapter 1481 day ago") for a
+	// chapter number. Replacing tags with spaces keeps such text separated.
 	for _, m := range anchorRe.FindAllStringSubmatch(doc, -1) {
-		text := strings.TrimSpace(html.UnescapeString(tagRe.ReplaceAllString(m[2], "")))
+		if seenPath[m[1]] {
+			continue
+		}
+		text := strings.Join(strings.Fields(html.UnescapeString(tagRe.ReplaceAllString(m[2], " "))), " ")
 		if cm := chapterTextRe.FindStringSubmatch(text); cm != nil {
 			num := NormalizeChapter(cm[1])
 			if _, ok := byNumber[num]; !ok {
 				byNumber[num] = m[1]
+				seenPath[m[1]] = true
 			}
 		}
 	}

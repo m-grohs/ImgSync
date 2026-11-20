@@ -128,6 +128,49 @@ func TestDiscoverChaptersMergesTextFallback(t *testing.T) {
 	}
 }
 
+func TestDiscoverChaptersIgnoresAdjacentDateSpans(t *testing.T) {
+	// Asura renders "Chapter <!-- -->145" next to a relative date span. Stripping
+	// tags without a separator used to turn "Chapter 148" + "1 day ago" into
+	// chapter 1481, creating phantom chapters pointing at the same URL.
+	doc := `<a href="/comics/x-abc123/chapter/145"><span>Chapter <!-- -->145</span>` +
+		`<span>3 weeks ago</span></a>` +
+		`<a href="/comics/x-abc123/chapter/146"><span>Chapter <!-- -->146</span>` +
+		`<span>2 weeks ago</span></a>` +
+		`<a href="/comics/x-abc123/chapter/147"><span>Chapter <!-- -->147</span>` +
+		`<span>last week</span></a>` +
+		`<a href="/comics/x-abc123/chapter/148"><span>Chapter <!-- -->148</span>` +
+		`<span>1 day ago</span></a>`
+	got := DiscoverChapters(doc)
+	if len(got) != 4 {
+		t.Fatalf("len = %d, want 4: %+v", len(got), got)
+	}
+	for i, want := range []string{"145", "146", "147", "148"} {
+		if got[i].Number != want {
+			t.Errorf("[%d] number = %q, want %q", i, got[i].Number, want)
+		}
+	}
+}
+
+func TestDiscoverChaptersTextFallbackSeparatesTags(t *testing.T) {
+	// Text-only links still need the fallback, but the date must not be glued
+	// onto the chapter number.
+	doc := `<a href="/read/thing/9"><span>Chapter <!-- -->9</span><span>2 weeks ago</span></a>`
+	got := DiscoverChapters(doc)
+	if len(got) != 1 || got[0].Number != "009" {
+		t.Fatalf("got = %+v, want one chapter 009", got)
+	}
+}
+
+func TestDiscoverChaptersPrefersPathOverText(t *testing.T) {
+	// A link with a usable /chapter/N path must not also produce a number from
+	// its text, even if the text would otherwise look like a larger chapter.
+	doc := `<a href="/comics/x/chapter/9">Chapter 910</a>`
+	got := DiscoverChapters(doc)
+	if len(got) != 1 || got[0].Number != "009" {
+		t.Fatalf("got = %+v, want one chapter 009", got)
+	}
+}
+
 func TestParseChapterCompactsIndices(t *testing.T) {
 	list := []any{
 		42.0,                                  // not an object
