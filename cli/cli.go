@@ -65,7 +65,7 @@ Usage:
   imgsync assume-synced <id|slug> <chapter>   trust chapters up to N as downloaded
   imgsync assume-synced <id|slug> --clear     remove the assumption
   imgsync unsync <id|slug> [chapter...]       mark chapter(s) unsynced [--dry-run]
-  imgsync run [--series ID|SLUG] [--dry-run] [--verify] [--limit N] [--no-progress] [--verbose]
+  imgsync run [--series ID|SLUG] [--dry-run] [--verify] [--yes] [--limit N] [--no-progress] [--verbose]
   imgsync version                             print build information
 
 A bookmark can be referenced by its list ID (e.g. 3), a unique slug prefix,

@@ -135,6 +135,7 @@ imgsync run
 imgsync run --series 3                       # only one bookmark
 imgsync run --dry-run                        # show what would be downloaded
 imgsync run --verify                         # conditional GET for db-synced pages
+imgsync run --yes                            # accept existing-folder prompts
 imgsync run --limit 10                       # max 10 new pages per bookmark
 imgsync run --no-progress                    # hide the progress bar
 imgsync run --verbose                        # show per-chapter indexing details
@@ -145,6 +146,14 @@ imgsync version                              # build information
 pages are still indexed so changed pages can be found, but at most N new images
 are downloaded per bookmark. Unchanged images (304 or identical bytes) count as
 unchanged, not new.
+
+Before downloading, `run` checks whether a series folder already exists without
+any pages or chapters of that bookmark recorded in the DB. It asks once before
+using such a folder, since files at the same destination path may be overwritten.
+Answering no skips only that bookmark; a scripted run without `--yes` fails instead of
+guessing. `--dry-run` reports the conflict without prompting. Bookmarks with an
+explicit location are exempt, because `set-location` already records the files
+found there in the DB.
 
 Wherever a command takes a bookmark, you can use the `ID` shown by
 `imgsync list` (e.g. `3`), a unique slug prefix (e.g. `blade`), or the full

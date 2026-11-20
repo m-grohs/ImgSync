@@ -479,7 +479,7 @@ func TestSyncAllLimitIsPerBookmark(t *testing.T) {
 	defer f.Close()
 
 	limit := 1
-	totals, failures, err := SyncAll(t.Context(), f, st, nil, false, false, &limit)
+	totals, failures, err := SyncAll(t.Context(), f, st, Options{Limit: &limit})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -537,7 +537,7 @@ func TestSyncAllIndexesAllSeriesBeforeDownloading(t *testing.T) {
 	f := fetch.New()
 	defer f.Close()
 
-	if _, failures, err := SyncAll(t.Context(), f, st, nil, false, false, nil); err != nil || len(failures) != 0 {
+	if _, failures, err := SyncAll(t.Context(), f, st, Options{}); err != nil || len(failures) != 0 {
 		t.Fatalf("SyncAll: failures = %v, err = %v", failures, err)
 	}
 

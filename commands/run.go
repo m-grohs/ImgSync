@@ -28,6 +28,8 @@ func Run(args []string) int {
 	noProgress := fs.Bool("no-progress", false, "hide the progress bar")
 	verbose := fs.Bool("verbose", false, "show per-chapter details while indexing")
 	fs.BoolVar(verbose, "v", false, "alias for --verbose")
+	yes := fs.Bool("yes", false, "use an existing series folder without asking")
+	fs.BoolVar(yes, "y", false, "alias for --yes")
 	if _, err := parseArgs(fs, args); err != nil {
 		return 2
 	}
@@ -67,7 +69,13 @@ func Run(args []string) int {
 	f := fetch.New()
 	defer f.Close()
 
-	totals, failures, err := sync.SyncAll(ctx, f, st, series, *dryRun, *verify, limitPtr)
+	totals, failures, err := sync.SyncAll(ctx, f, st, sync.Options{
+		Slugs:     series,
+		DryRun:    *dryRun,
+		Verify:    *verify,
+		AssumeYes: *yes,
+		Limit:     limitPtr,
+	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		return 1

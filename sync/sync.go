@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/url"
 	"os"
@@ -13,7 +14,6 @@ import (
 	"strings"
 	stdsync "sync"
 
-	"imgsync/config"
 	"imgsync/discover"
 	"imgsync/fetch"
 	"imgsync/progress"
@@ -684,12 +684,10 @@ func relinkRenamedPaths(st *state.State, slug string, renamed map[string]string)
 // location. Folders created by older versions from the lowercase URL slug are
 // renamed to the title-based name once, so downloads stay in one folder.
 func seriesOutRoot(st *state.State, b state.Bookmark, dryRun bool) (string, error) {
-	base, err := config.OutputDir()
+	target, legacy, err := seriesCandidatePaths(b)
 	if err != nil {
 		return "", err
 	}
-	target := filepath.Join(base, discover.SeriesFolderName(b.Title, b.Slug))
-	legacy := filepath.Join(base, discover.SeriesFolder(b.Slug))
 	if target == legacy {
 		return target, nil
 	}
@@ -780,31 +778,35 @@ func normalizeChapterFolders(st *state.State, slug, outRoot string, dryRun bool)
 	return nil
 }
 
+// Options controls one sync run.
+type Options struct {
+	Slugs       []string
+	DryRun      bool
+	Verify      bool
+	AssumeYes   bool      // accept existing-folder prompts without asking
+	Limit       *int      // max new pages per bookmark
+	Input       io.Reader // confirmation input; nil means os.Stdin (TTY-detected)
+	Interactive *bool     // overrides TTY detection; nil means auto-detect
+}
+
 // SyncAll syncs every enabled bookmark (optionally filtered by slug). The
 // page limit is applied independently to each bookmark.
-func SyncAll(
-	ctx context.Context,
-	f *fetch.Fetcher,
-	st *state.State,
-	slugs []string,
-	dryRun, verify bool,
-	limit *int,
-) (Summary, []string, error) {
+func SyncAll(ctx context.Context, f *fetch.Fetcher, st *state.State, opts Options) (Summary, []string, error) {
 	bookmarks, err := st.EnabledBookmarks()
 	if err != nil {
 		return Summary{}, nil, err
 	}
 
-	if len(slugs) > 0 {
+	if len(opts.Slugs) > 0 {
 		wanted := map[string]bool{}
-		for _, s := range slugs {
+		for _, s := range opts.Slugs {
 			wanted[s] = true
 		}
 		known := map[string]bool{}
 		for _, b := range bookmarks {
 			known[b.Slug] = true
 		}
-		for _, s := range slugs {
+		for _, s := range opts.Slugs {
 			if !known[s] {
 				return Summary{}, nil, fmt.Errorf("unknown or disabled bookmark: %s", s)
 			}
@@ -830,34 +832,86 @@ func SyncAll(
 		refs     []discover.ChapterRef
 		plans    []chapterPlan
 		summary  Summary
+		skip     bool
+		skipNote string
 		err      error
+	}
+
+	runs := make([]seriesRun, 0, len(bookmarks))
+	for _, b := range bookmarks {
+		run := seriesRun{bookmark: b, started: state.Now()}
+		if opts.Limit != nil {
+			n := *opts.Limit
+			run.limit = &n
+		}
+		runs = append(runs, run)
+	}
+
+	// Decide about existing series folders before starting any progress bar,
+	// folder rename or network work. An incremental sync is silent because its
+	// folder already has page rows in the database.
+	input := opts.Input
+	interactive := true
+	if input == nil {
+		input = os.Stdin
+		interactive = isInteractive(input)
+	}
+	if opts.Interactive != nil {
+		interactive = *opts.Interactive
+	}
+	for i := range runs {
+		run := &runs[i]
+		if run.bookmark.Location != "" {
+			continue
+		}
+		conflict, err := findSeriesFolderConflict(st, run.bookmark)
+		if err != nil {
+			slog.Warn("cannot check series folder", "bookmark", run.bookmark.Slug, "error", err)
+			continue
+		}
+		if conflict == nil {
+			continue
+		}
+		if opts.DryRun {
+			slog.Warn("existing series folder would need confirmation",
+				"bookmark", run.bookmark.Slug, "path", conflict.path)
+			continue
+		}
+		use, err := confirmFolderUse(conflict, opts.AssumeYes, interactive, input)
+		if err != nil {
+			run.skip, run.err = true, err
+			continue
+		}
+		if !use {
+			run.skip = true
+			run.skipNote = "skipped: existing series folder not confirmed"
+		}
 	}
 
 	// First discover every series page. The short-lived bar shows progress
 	// while the total number of chapters is still unknown.
-	runs := make([]seriesRun, 0, len(bookmarks))
-	discoveryBar := progress.New("Indexing", "", "series", len(bookmarks))
-	for _, b := range bookmarks {
-		run := seriesRun{bookmark: b, started: state.Now()}
-		if limit != nil {
-			n := *limit
-			run.limit = &n
+	discoveryBar := progress.New("Indexing", "", "series", len(runs))
+	for i := range runs {
+		run := &runs[i]
+		if run.skip {
+			discoveryBar.Add(1)
+			continue
 		}
+		b := run.bookmark
 		run.outRoot = b.Location
 		if run.outRoot == "" {
-			run.outRoot, err = seriesOutRoot(st, b, dryRun)
+			run.outRoot, err = seriesOutRoot(st, b, opts.DryRun)
 			if err != nil {
 				discoveryBar.Finish()
 				return Summary{}, nil, err
 			}
 		}
-		if err := normalizeChapterFolders(st, b.Slug, run.outRoot, dryRun); err != nil {
+		if err := normalizeChapterFolders(st, b.Slug, run.outRoot, opts.DryRun); err != nil {
 			slog.Warn("chapter folder migration failed", "bookmark", b.Slug, "error", err)
 		}
 
 		slog.Info("syncing", "bookmark", b.Slug)
-		run.refs, run.summary, run.err = discoverSeries(ctx, f, st, b, verify)
-		runs = append(runs, run)
+		run.refs, run.summary, run.err = discoverSeries(ctx, f, st, b, opts.Verify)
 		discoveryBar.Add(1)
 	}
 	discoveryBar.Finish()
@@ -866,19 +920,19 @@ func SyncAll(
 	// --limit can shorten a series, so the total shrinks when that happens.
 	totalChapters := 0
 	for i := range runs {
-		if runs[i].err == nil {
+		if runs[i].err == nil && !runs[i].skip {
 			totalChapters += len(runs[i].refs)
 		}
 	}
 	indexBar := progress.New("Indexing", "", "chapters", totalChapters)
 	for i := range runs {
 		run := &runs[i]
-		if run.err != nil {
+		if run.err != nil || run.skip {
 			continue
 		}
 		indexBar.SetDetail(displayName(run.bookmark))
 		plans, indexed, err := indexSeries(
-			ctx, f, st, run.bookmark, run.refs, dryRun, verify, run.limit,
+			ctx, f, st, run.bookmark, run.refs, opts.DryRun, opts.Verify, run.limit,
 			func() { indexBar.Add(1) },
 			func(n int) {
 				totalChapters -= n
@@ -898,9 +952,9 @@ func SyncAll(
 		b := run.bookmark
 		summary := run.summary
 		err := run.err
-		if err == nil {
+		if !run.skip && err == nil {
 			var downloaded Summary
-			downloaded, err = downloadSeries(ctx, f, st, b, run.outRoot, run.plans, dryRun, verify, run.limit)
+			downloaded, err = downloadSeries(ctx, f, st, b, run.outRoot, run.plans, opts.DryRun, opts.Verify, run.limit)
 			if err == nil {
 				summary.Add(downloaded)
 			}
@@ -910,14 +964,19 @@ func SyncAll(
 		note := ""
 		newPages, skipped, failed, locked := 0, 0, 0, 0
 
-		if err != nil {
+		switch {
+		case run.skip && err == nil:
+			result = "skipped"
+			note = run.skipNote
+			slog.Info("bookmark skipped", "bookmark", b.Slug, "note", note)
+		case err != nil:
 			failed = 1
 			totals.FailedBookmarks++
 			result = "error"
 			note = "error: " + err.Error()
 			failures = append(failures, b.Slug)
 			slog.Error("bookmark failed", "bookmark", b.Slug, "error", err)
-		} else {
+		default:
 			totals.Add(summary)
 			newPages, skipped, failed, locked = summary.New, summary.Skipped, summary.Failures(), summary.Locked
 			note = summary.Note()
