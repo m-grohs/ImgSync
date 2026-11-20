@@ -560,6 +560,113 @@ func TestSyncAllIndexesAllSeriesBeforeDownloading(t *testing.T) {
 	}
 }
 
+func TestDiscoverSeriesReturnsOnlyChaptersToFetch(t *testing.T) {
+	disableProgress(t)
+
+	var chapterRequests atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/series/test":
+			_, _ = w.Write([]byte(`<a href="/chapter/1">Chapter 1</a><a href="/chapter/2">Chapter 2</a><a href="/chapter/3">Chapter 3</a>`))
+		case strings.HasPrefix(r.URL.Path, "/chapter/"):
+			chapterRequests.Add(1)
+			_, _ = w.Write([]byte(`<img src="/img/page.png">`))
+		}
+	}))
+	defer srv.Close()
+
+	st, err := state.Open(filepath.Join(t.TempDir(), "state.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if _, err := st.UpsertBookmark("test", "id", srv.URL+"/series/test", "Test"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetAssumeSyncedThrough("test", "2"); err != nil {
+		t.Fatal(err)
+	}
+	bookmark, err := st.GetBookmark("test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := fetch.New()
+	defer f.Close()
+
+	refs, summary, err := discoverSeries(t.Context(), f, st, *bookmark, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(refs) != 1 || refs[0].Number != "003" {
+		t.Fatalf("refs = %+v, want only chapter 3", refs)
+	}
+	if summary.Assumed != 2 || summary.Chapters != 2 {
+		t.Fatalf("summary = %+v, want 2 assumed chapters", summary)
+	}
+	if got := chapterRequests.Load(); got != 0 {
+		t.Fatalf("chapter requests during discovery = %d, want 0", got)
+	}
+}
+
+func TestIndexSeriesProgressCallbacks(t *testing.T) {
+	disableProgress(t)
+
+	var chapterRequests atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/series/test":
+			_, _ = w.Write([]byte(`<a href="/chapter/1">Chapter 1</a><a href="/chapter/2">Chapter 2</a><a href="/chapter/3">Chapter 3</a>`))
+		case strings.HasPrefix(r.URL.Path, "/chapter/"):
+			chapterRequests.Add(1)
+			_, _ = w.Write([]byte(`<img src="/img/page.png">`))
+		}
+	}))
+	defer srv.Close()
+
+	st, err := state.Open(filepath.Join(t.TempDir(), "state.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	f := fetch.New()
+	defer f.Close()
+	bookmark := state.Bookmark{Slug: "test", URL: srv.URL + "/series/test"}
+	refs, _, err := discoverSeries(t.Context(), f, st, bookmark, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fetched, remaining := 0, -1
+	plans, _, err := indexSeries(
+		t.Context(), f, st, bookmark, refs, true, false, nil,
+		func() { fetched++ },
+		func(n int) { remaining = n },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fetched != 3 || remaining != -1 || len(plans) != 3 {
+		t.Fatalf("fetched = %d, remaining = %d, plans = %d; want 3, -1, 3", fetched, remaining, len(plans))
+	}
+	if got := chapterRequests.Load(); got != 3 {
+		t.Fatalf("chapter requests = %d, want 3", got)
+	}
+
+	limit := 1
+	fetched, remaining = 0, -1
+	_, _, err = indexSeries(
+		t.Context(), f, st, bookmark, refs, true, false, &limit,
+		func() { fetched++ },
+		func(n int) { remaining = n },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fetched != 1 || remaining != 2 {
+		t.Fatalf("with limit: fetched = %d, remaining = %d; want 1, 2", fetched, remaining)
+	}
+}
+
 func TestVerifySkipsPagesIntegratedFromDisk(t *testing.T) {
 	disableProgress(t)
 	var imageRequests atomic.Int64

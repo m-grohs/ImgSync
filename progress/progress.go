@@ -114,6 +114,20 @@ func (b *Bar) Add(n int) {
 	b.drawLocked()
 }
 
+// SetTotal changes the number of items the bar counts. It is used when the
+// amount of work becomes known, or shrinks, after the bar was created.
+func (b *Bar) SetTotal(total int) {
+	mu.Lock()
+	defer mu.Unlock()
+	b.total = total
+	if b.done > b.total {
+		b.done = b.total
+	}
+	if enabled && active == b {
+		b.drawLocked()
+	}
+}
+
 // SetLabel replaces the label shown at the start of the line.
 func (b *Bar) SetLabel(label string) {
 	mu.Lock()

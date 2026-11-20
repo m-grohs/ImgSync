@@ -339,16 +339,16 @@ func pendingPages(pages []discover.Page, synced map[int]bool) int {
 	return n
 }
 
-// indexSeries fetches and parses the chapters of one bookmark and builds
-// download plans for the whole run. It performs no page downloads.
-func indexSeries(
+// discoverSeries fetches a series page and returns the chapters that still
+// need to be fetched. It runs before any chapter work so a progress bar can
+// count the chapters that will actually be requested.
+func discoverSeries(
 	ctx context.Context,
 	f *fetch.Fetcher,
 	st *state.State,
 	bookmark state.Bookmark,
-	dryRun, verify bool,
-	limit *int,
-) ([]chapterPlan, Summary, error) {
+	verify bool,
+) ([]discover.ChapterRef, Summary, error) {
 	summary := Summary{}
 	slug := bookmark.Slug
 
@@ -381,22 +381,7 @@ func indexSeries(
 		}
 	}
 
-	// Without verification, pages already in the database are skipped locally.
-	// They are not part of the download work, so keep them out of the bar total.
-	needsSynced := !verify || dryRun
-	var synced map[string]map[int]bool
-	if needsSynced {
-		synced, err = syncedIndexes(st, slug)
-		if err != nil {
-			return nil, summary, err
-		}
-	}
-
-	// Index chapter pages and collect their page lists. This performs the same
-	// chapter requests as the old single-pass loop and gives each download bar
-	// an exact total.
-	var plans []chapterPlan
-	pendingTotal := 0
+	refs := make([]discover.ChapterRef, 0, len(chapters))
 	for _, ref := range chapters {
 		if bookmark.AssumeSyncedThrough != "" &&
 			!assumeExceptions[ref.Number] &&
@@ -414,18 +399,59 @@ func indexSeries(
 			continue
 		}
 
+		refs = append(refs, ref)
+	}
+	return refs, summary, nil
+}
+
+// indexSeries fetches and parses the chapters returned by discoverSeries and
+// builds download plans for the whole run. It performs no page downloads.
+// onChapter is called once per chapter page request; onRemaining is called
+// with the number of candidates left unrequested when a limit stops the loop.
+func indexSeries(
+	ctx context.Context,
+	f *fetch.Fetcher,
+	st *state.State,
+	bookmark state.Bookmark,
+	refs []discover.ChapterRef,
+	dryRun, verify bool,
+	limit *int,
+	onChapter func(),
+	onRemaining func(int),
+) ([]chapterPlan, Summary, error) {
+	summary := Summary{}
+	slug := bookmark.Slug
+
+	// Without verification, pages already in the database are skipped locally.
+	// They are not part of the download work, so keep them out of the bar total.
+	needsSynced := !verify || dryRun
+	var synced map[string]map[int]bool
+	if needsSynced {
+		var err error
+		synced, err = syncedIndexes(st, slug)
+		if err != nil {
+			return nil, summary, err
+		}
+	}
+
+	var plans []chapterPlan
+	pendingTotal := 0
+	for i, ref := range refs {
 		if limit != nil && *limit <= 0 {
 			slog.Info("download limit reached", "bookmark", slug)
+			onRemaining(len(refs) - i)
 			break
 		}
 		if limit != nil && needsSynced && pendingTotal >= *limit {
 			slog.Info("download limit reached", "bookmark", slug)
+			onRemaining(len(refs) - i)
 			break
 		}
 
 		slog.Debug("indexing chapter", "bookmark", slug, "chapter", ref.Number)
 		chapterURL := resolveURL(bookmark.URL, ref.Path)
 		chapterDoc, err := f.GetText(ctx, chapterURL)
+		onChapter()
 		if err != nil {
 			slog.Error("chapter fetch failed", "bookmark", slug, "chapter", ref.Number, "error", err)
 			summary.FailedChapters++
@@ -590,8 +616,8 @@ func downloadSeries(
 }
 
 // SyncSeries syncs one bookmark. outRoot is the bookmark location or the
-// global output folder. SyncAll uses indexSeries and downloadSeries directly
-// so every series can be indexed before any download starts.
+// global output folder. SyncAll uses discoverSeries, indexSeries and
+// downloadSeries directly so every series can be indexed before any download.
 func SyncSeries(
 	ctx context.Context,
 	f *fetch.Fetcher,
@@ -601,7 +627,15 @@ func SyncSeries(
 	dryRun, verify bool,
 	limit *int,
 ) (Summary, error) {
-	plans, summary, err := indexSeries(ctx, f, st, bookmark, dryRun, verify, limit)
+	refs, summary, err := discoverSeries(ctx, f, st, bookmark, verify)
+	if err != nil {
+		return summary, err
+	}
+	plans, indexed, err := indexSeries(
+		ctx, f, st, bookmark, refs, dryRun, verify, limit,
+		func() {}, func(int) {},
+	)
+	summary.Add(indexed)
 	if err != nil {
 		return summary, err
 	}
@@ -793,15 +827,16 @@ func SyncAll(
 		outRoot  string
 		started  string
 		limit    *int
+		refs     []discover.ChapterRef
 		plans    []chapterPlan
 		summary  Summary
 		err      error
 	}
 
-	// One bar covers indexing for every series in this run. A series with no
-	// pending work advances it immediately, so the ETA reflects real work.
+	// First discover every series page. The short-lived bar shows progress
+	// while the total number of chapters is still unknown.
 	runs := make([]seriesRun, 0, len(bookmarks))
-	indexBar := progress.New("Indexing", "", "series", len(bookmarks))
+	discoveryBar := progress.New("Indexing", "", "series", len(bookmarks))
 	for _, b := range bookmarks {
 		run := seriesRun{bookmark: b, started: state.Now()}
 		if limit != nil {
@@ -812,7 +847,7 @@ func SyncAll(
 		if run.outRoot == "" {
 			run.outRoot, err = seriesOutRoot(st, b, dryRun)
 			if err != nil {
-				indexBar.Finish()
+				discoveryBar.Finish()
 				return Summary{}, nil, err
 			}
 		}
@@ -821,10 +856,40 @@ func SyncAll(
 		}
 
 		slog.Info("syncing", "bookmark", b.Slug)
-		run.plans, run.summary, run.err = indexSeries(ctx, f, st, b, dryRun, verify, run.limit)
+		run.refs, run.summary, run.err = discoverSeries(ctx, f, st, b, verify)
 		runs = append(runs, run)
-		indexBar.Add(1)
+		discoveryBar.Add(1)
 	}
+	discoveryBar.Finish()
+
+	// The chapter bar counts only chapters whose page is actually requested.
+	// --limit can shorten a series, so the total shrinks when that happens.
+	totalChapters := 0
+	for i := range runs {
+		if runs[i].err == nil {
+			totalChapters += len(runs[i].refs)
+		}
+	}
+	indexBar := progress.New("Indexing", "", "chapters", totalChapters)
+	for i := range runs {
+		run := &runs[i]
+		if run.err != nil {
+			continue
+		}
+		indexBar.SetDetail(displayName(run.bookmark))
+		plans, indexed, err := indexSeries(
+			ctx, f, st, run.bookmark, run.refs, dryRun, verify, run.limit,
+			func() { indexBar.Add(1) },
+			func(n int) {
+				totalChapters -= n
+				indexBar.SetTotal(totalChapters)
+			},
+		)
+		run.plans = plans
+		run.summary.Add(indexed)
+		run.err = err
+	}
+	indexBar.SetDetail("")
 	indexBar.Finish()
 
 	totals := Summary{}

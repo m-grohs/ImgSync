@@ -79,6 +79,10 @@ func TestBarLineLayout(t *testing.T) {
 	if strings.Index(chapter, "8/20 pages") > strings.Index(chapter, "[") {
 		t.Errorf("counts should precede the bar: %q", chapter)
 	}
+	indexChapters := barLine("Indexing", "Blade & Soul", "chapters", 12, 137, 1.5, "1:23")
+	if !strings.Contains(indexChapters, "Indexing  Blade & Soul  12/137 chapters  [") {
+		t.Errorf("chapter-based indexing line has unexpected layout: %q", indexChapters)
+	}
 }
 
 func TestFinishedBarsStack(t *testing.T) {
@@ -118,6 +122,40 @@ func TestBarLineBeforeFirstItem(t *testing.T) {
 	if strings.Contains(line, "/s") {
 		t.Errorf("barLine() = %q, should not show a rate before any progress", line)
 	}
+}
+
+func TestBarSetTotal(t *testing.T) {
+	var buf bytes.Buffer
+	mu.Lock()
+	wasEnabled, wasOut, wasActive := enabled, out, active
+	enabled, out, active = true, &buf, nil
+	mu.Unlock()
+	t.Cleanup(func() {
+		mu.Lock()
+		enabled, out, active = wasEnabled, wasOut, wasActive
+		mu.Unlock()
+	})
+
+	bar := New("Indexing", "", "chapters", 10)
+	bar.Add(2)
+	bar.SetTotal(4)
+	text := strings.ReplaceAll(buf.String(), "\r\x1b[K", "")
+	if !strings.Contains(text, "2/4 chapters") || !strings.Contains(text, " 50%") {
+		t.Errorf("after shrinking total: %q", text)
+	}
+
+	bar.SetTotal(1)
+	text = strings.ReplaceAll(buf.String(), "\r\x1b[K", "")
+	if !strings.Contains(text, "1/1 chapters") || !strings.Contains(text, "100%") {
+		t.Errorf("after clamping done: %q", text)
+	}
+
+	bar.SetTotal(8)
+	text = strings.ReplaceAll(buf.String(), "\r\x1b[K", "")
+	if !strings.Contains(text, "1/8 chapters") || !strings.Contains(text, " 12%") {
+		t.Errorf("after growing total: %q", text)
+	}
+	bar.Finish()
 }
 
 func TestBarLineClampsOvershoot(t *testing.T) {

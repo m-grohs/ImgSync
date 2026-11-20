@@ -153,13 +153,25 @@ slug. Ambiguous prefixes are rejected with the matching slugs.
 ## Progress
 
 On interactive terminals `imgsync run` shows live progress bars on stderr.
-First every enabled series is indexed under one shared bar that counts series:
+Indexing happens in two steps. First every enabled series page is scanned under
+a short-lived bar that counts series:
 
 ```
 Indexing  3/8 series  [████████░░░░░░░░░░░░]  37%  1.2/s  ETA 0:04
 ```
 
-Then the chapters are downloaded. Every chapter gets a bar of its own and
+Then the discovered chapter pages are fetched under one bar that counts the
+chapters actually requested:
+
+```
+Indexing  Blade & Soul  12/137 chapters  [████░░░░░░░░░░░░░░░░░]  8%  2.4/s  ETA 0:52
+```
+
+Chapters skipped by `assume-synced` or because they are already up to date are
+not counted. If `--limit` stops a series early, the chapter total is reduced
+accordingly.
+
+Afterwards the chapters are downloaded. Every chapter gets a bar of its own and
 finished lines stay on screen, one below the other:
 
 ```
