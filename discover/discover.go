@@ -37,6 +37,11 @@ var (
 	srcsetRe   = regexp.MustCompile(`(?i)(?:^|\s)srcset="([^"]+)"`)
 	hrefAttrRe = regexp.MustCompile(`(?i)(?:^|\s)href="([^"]+)"`)
 
+	divTagRe      = regexp.MustCompile(`(?i)<div\b[^>]*>`)
+	closeDivRe    = regexp.MustCompile(`(?i)</div\s*>`)
+	classDoubleRe = regexp.MustCompile(`(?i)(?:^|\s)class="([^"]*)"`)
+	classSingleRe = regexp.MustCompile(`(?i)(?:^|\s)class='([^']*)'`)
+
 	chapterFolderRe = regexp.MustCompile(`(?i)^chapter[\s_-]+([0-9]+(?:\.[0-9]+)?)\s*$`)
 	pageFileRe      = regexp.MustCompile(`^(\d+)\.([A-Za-z0-9]+)$`)
 
@@ -316,6 +321,9 @@ func PageExtension(raw string) string {
 }
 
 func resolveAgainst(base, ref string) string {
+	// Sites may wrap attribute values in newlines/tabs; url.Parse rejects
+	// control characters outright, so normalize before resolving.
+	ref = strings.TrimSpace(ref)
 	b, err := url.Parse(base)
 	if err != nil {
 		return ref
@@ -460,7 +468,11 @@ func ParseChapter(doc, number, chapterURL string) (*Chapter, error) {
 			continue
 		}
 		u, ok := pm["url"].(string)
-		if !ok || u == "" {
+		if !ok {
+			continue
+		}
+		u = strings.TrimSpace(u)
+		if u == "" {
 			continue
 		}
 		// Compact indices so filenames stay contiguous after invalid entries.
@@ -485,43 +497,111 @@ func ParseChapter(doc, number, chapterURL string) (*Chapter, error) {
 	}, nil
 }
 
+// hasClassToken reports whether a class attribute contains the given token.
+func hasClassToken(attr, want string) bool {
+	for _, token := range strings.Fields(attr) {
+		if strings.EqualFold(token, want) {
+			return true
+		}
+	}
+	return false
+}
+
+func classHasToken(tag, want string) bool {
+	for _, re := range []*regexp.Regexp{classDoubleRe, classSingleRe} {
+		if m := re.FindStringSubmatch(tag); m != nil && hasClassToken(m[1], want) {
+			return true
+		}
+	}
+	return false
+}
+
+// chapterContentRegion narrows a page to the reader container when the site
+// marks one with class="reading-content". Nested divs are counted so the
+// region ends at the container's own closing tag. If the markup is unbalanced,
+// the full document is returned rather than dropping pages.
+func chapterContentRegion(doc string) string {
+	for _, loc := range divTagRe.FindAllStringIndex(doc, -1) {
+		if !classHasToken(doc[loc[0]:loc[1]], "reading-content") {
+			continue
+		}
+		depth := 1
+		for pos := loc[1]; pos < len(doc); {
+			open := divTagRe.FindStringIndex(doc[pos:])
+			close := closeDivRe.FindStringIndex(doc[pos:])
+			if close == nil {
+				return doc
+			}
+			if open != nil && open[0] < close[0] {
+				depth++
+				pos += open[1]
+				continue
+			}
+			depth--
+			pos += close[1]
+			if depth == 0 {
+				return doc[loc[0]:pos]
+			}
+		}
+		return doc
+	}
+	return doc
+}
+
 // orderedImageURLs collects image URLs from <img>/<a> tags in document order.
+// Site chrome (logos, avatars, footer art) is excluded when the chapter reader
+// identifies its own images or a content container. Otherwise the whole
+// document is scanned, preserving support for sites without such markers.
 func orderedImageURLs(doc string) []string {
+	region := chapterContentRegion(doc)
 	type hit struct {
-		start int
-		url   string
+		start   int
+		url     string
+		chapter bool
 	}
 	var hits []hit
-	for _, loc := range imgTagRe.FindAllStringIndex(doc, -1) {
-		tag := doc[loc[0]:loc[1]]
+	for _, loc := range imgTagRe.FindAllStringIndex(region, -1) {
+		tag := region[loc[0]:loc[1]]
+		chapter := classHasToken(tag, "wp-manga-chapter-img")
 		if u := firstAttr(tag, srcRe); u != "" {
 			if hasImageExt(u) {
-				hits = append(hits, hit{loc[0], u})
+				hits = append(hits, hit{loc[0], u, chapter})
 			}
 			continue
 		}
 		if u := firstAttr(tag, dataSrcRe); u != "" {
 			if hasImageExt(u) {
-				hits = append(hits, hit{loc[0], u})
+				hits = append(hits, hit{loc[0], u, chapter})
 			}
 			continue
 		}
 		if ss := firstAttr(tag, srcsetRe); ss != "" {
 			if u := firstSrcsetURL(ss); u != "" && hasImageExt(u) {
-				hits = append(hits, hit{loc[0], u})
+				hits = append(hits, hit{loc[0], u, chapter})
 			}
 		}
 	}
-	for _, loc := range aTagRe.FindAllStringIndex(doc, -1) {
-		tag := doc[loc[0]:loc[1]]
+	for _, loc := range aTagRe.FindAllStringIndex(region, -1) {
+		tag := region[loc[0]:loc[1]]
 		if u := firstAttr(tag, hrefAttrRe); u != "" && hasImageExt(u) {
-			hits = append(hits, hit{loc[0], u})
+			hits = append(hits, hit{loc[0], u, false})
 		}
 	}
 	slices.SortFunc(hits, func(a, b hit) int { return cmp.Compare(a.start, b.start) })
+
+	preferChapter := false
+	for _, h := range hits {
+		if h.chapter {
+			preferChapter = true
+			break
+		}
+	}
 	seen := map[string]bool{}
 	out := make([]string, 0, len(hits))
 	for _, h := range hits {
+		if preferChapter && !h.chapter {
+			continue
+		}
 		if seen[h.url] {
 			continue
 		}
@@ -533,7 +613,7 @@ func orderedImageURLs(doc string) []string {
 
 func firstAttr(tag string, re *regexp.Regexp) string {
 	if m := re.FindStringSubmatch(tag); m != nil {
-		return m[1]
+		return strings.TrimSpace(m[1])
 	}
 	return ""
 }
@@ -544,7 +624,7 @@ func firstSrcsetURL(ss string) string {
 	if len(fields) == 0 {
 		return ""
 	}
-	return fields[0]
+	return strings.TrimSpace(fields[0])
 }
 
 // ParseChapterFolderName parses "chapter 001" / "chapter-001" -> ("001", true).

@@ -345,6 +345,63 @@ func TestParseChapterFallbackResolvesRelativeImages(t *testing.T) {
 	}
 }
 
+func TestParseChapterFallbackTrimsWhitespaceInSrc(t *testing.T) {
+	// WP-Manga/Madara sites wrap src values in tabs and newlines. url.Parse
+	// rejects those control characters, so the parser must strip them.
+	doc := "<html><body><img id=\"image-0\" src=\"\t\t\t\n\t\t\t" +
+		"https://x/001.jpg\" class=\"wp-manga-chapter-img\"></body></html>"
+	chapter, err := ParseChapter(doc, "001", "https://site/chapter/1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chapter.Pages) != 1 {
+		t.Fatalf("pages = %+v", chapter.Pages)
+	}
+	if chapter.Pages[0].URL != "https://x/001.jpg" {
+		t.Fatalf("url = %q", chapter.Pages[0].URL)
+	}
+}
+
+func TestParseChapterFallbackPrefersChapterImages(t *testing.T) {
+	doc := `<html><body>` +
+		`<img src="https://x/logo.png">` +
+		`<div class="reading-content"><div class="page-break no-gaps">` +
+		`<img src="https://x/001.jpg" class="wp-manga-chapter-img">` +
+		`<img src="https://x/002.jpg" class="wp-manga-chapter-img">` +
+		`</div></div>` +
+		`<a href="https://x/home.png"><img src="https://x/home.png"></a>` +
+		`</body></html>`
+	chapter, err := ParseChapter(doc, "001", "https://site/chapter/1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chapter.Pages) != 2 {
+		t.Fatalf("pages = %+v", chapter.Pages)
+	}
+	for i, want := range []string{"https://x/001.jpg", "https://x/002.jpg"} {
+		if chapter.Pages[i].Index != i || chapter.Pages[i].URL != want {
+			t.Fatalf("page %d = %+v, want index %d url %q", i, chapter.Pages[i], i, want)
+		}
+	}
+}
+
+func TestParseChapterFallbackUsesContentRegionWithoutMarkers(t *testing.T) {
+	doc := `<html><body>` +
+		`<img src="https://x/logo.png">` +
+		`<div class="wrapper reading-content extra"><div class="page-break">` +
+		`<img src="/img/001.jpg">` +
+		`</div></div>` +
+		`<img src="https://x/home.png">` +
+		`</body></html>`
+	chapter, err := ParseChapter(doc, "001", "https://site/chapter/1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chapter.Pages) != 1 || chapter.Pages[0].URL != "https://site/img/001.jpg" {
+		t.Fatalf("pages = %+v", chapter.Pages)
+	}
+}
+
 func TestExtension(t *testing.T) {
 	if got := PageExtension("https://x/a.JPG?v=1"); got != ".jpg" {
 		t.Fatalf("got %q", got)

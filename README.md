@@ -294,7 +294,9 @@ ImgSync create a fresh database; the old file is never modified automatically.
   with a link-text fallback for other sites).
 - Chapter pages embed their page lists; on Asura sites the Astro
   `ChapterReader` props are used, otherwise images are collected in document
-  order (`<img src>`, `srcset`, image links).
+  order (`<img src>`, `srcset`, image links). Reader containers and chapter
+  image markers are preferred so site logos and footer art are not mistaken
+  for pages.
 - Chapters whose pages are all in the DB are marked synced and skipped during
   indexing; their chapter page is not fetched again.
 - Pages the DB marks as synced are skipped without a request (unless
