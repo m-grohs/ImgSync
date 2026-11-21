@@ -30,6 +30,8 @@ func Run(args []string) int {
 		return commands.List(args[1:])
 	case "remove":
 		return commands.Remove(args[1:])
+	case "reset":
+		return commands.Reset(args[1:])
 	case "set-output":
 		return commands.SetOutput(args[1:])
 	case "set-location":
@@ -59,6 +61,7 @@ Usage:
   imgsync add <url...> [-f FILE]              register bookmark(s)
   imgsync list                                show registered bookmarks
   imgsync remove <id|slug>                    stop syncing, keep downloaded files
+  imgsync reset [--yes]                       delete all state, start IDs from 1
   imgsync set-output <dir>                    set the folder new chapters download to
   imgsync set-location <id|slug> <path>       point a bookmark at its folder [--dry-run]
                                              [--assume-synced-through N]
