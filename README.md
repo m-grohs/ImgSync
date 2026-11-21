@@ -119,6 +119,9 @@ built binary reports `imgsync dev (...)`; release binaries report their
 ```sh
 imgsync add https://asurascans.com/comics/blade-of-the-discarded-7ba78ec7
 imgsync add -f urls.txt                      # one URL per line, # comments allowed
+imgsync export [-o bookmarks.txt]            # export bookmarks + assumptions (txt, csv, json)
+imgsync export -o bookmarks.csv              # format inferred from the file extension
+imgsync import bookmarks.txt [--dry-run] [--update] [--online]
 imgsync list
 imgsync set-output ~/Pictures/ImgSync        # folder new chapters download to
 imgsync set-location 3 ~/Pictures/ImgSync    # point a bookmark at its existing folder
@@ -238,6 +241,77 @@ are always derived from the chapter number (`Chapter 001`, `Chapter 12.5`).
 Folders created by older versions from the lowercase slug or with lowercase
 `chapter NNN` labels are renamed to the canonical names on the next run, and
 their stored page paths are updated automatically.
+
+## Import and export bookmarks
+
+`export` writes every bookmark together with its assumed-synced cutoff,
+assumption exceptions, title, location and enabled state. It prints to stdout
+unless `-o FILE` is given. The format defaults to `txt`; with `-o`, it is
+inferred from the extension (`.csv`, `.json`, otherwise txt). Override it with
+`--format txt|csv|json`.
+
+`import` reads the same three formats, inferring from the file extension
+(`-` reads stdin). By default it **merges**: new bookmarks are added, existing
+ones are left alone. Pass `--update` to apply the fields present in the file to
+existing bookmarks, `--dry-run` to print the plan without writing, and
+`--online` to fetch titles for new bookmarks (otherwise titles come from the
+file or fall back to the slug). The whole file is validated before anything is
+written, so an invalid entry aborts the import.
+
+A field that is **absent** means "leave the existing value alone"; `none` means
+"clear it". Chapter ranges in `except` are expanded (`110-115` → six chapters).
+
+**txt** (default, one bookmark per line; `#` starts a comment):
+
+```txt
+# imgsync bookmarks v1
+https://asurascans.com/comics/blade-of-the-discarded-7ba78ec7 assume=127 except=104,110-115 title="Blade & Soul" location="~/Pictures/ImgSync/Blade & Soul"
+https://asurascans.com/comics/foo-abc123 assume=12.5
+```
+
+**csv** (header row, empty cell = absent):
+
+```csv
+url,assume,except,title,location,enabled
+https://asurascans.com/comics/blade-of-the-discarded-7ba78ec7,127,"104,110-115",Blade & Soul,~/Pictures/ImgSync/Blade & Soul,1
+```
+
+**json** (missing key = absent, `[]` clears `except`):
+
+```json
+{
+  "format": "imgsync-bookmarks",
+  "version": 1,
+  "bookmarks": [
+    {
+      "url": "https://asurascans.com/comics/blade-of-the-discarded-7ba78ec7",
+      "assume": "127",
+      "except": ["104", "110-115"],
+      "title": "Blade & Soul",
+      "location": "~/Pictures/ImgSync/Blade & Soul",
+      "enabled": true
+    }
+  ]
+}
+```
+
+If a file lists a `location` that does not exist on this machine (or points to
+a file instead of a directory), the import warns and ignores that field. New
+bookmarks then use the global output folder, and an existing bookmark keeps its
+current location. Convert an old `# N` assumption file by moving the number to
+the preceding URL line:
+
+```txt
+# before
+https://asurascans.com/comics/blade-of-the-discarded-7ba78ec7
+# 127
+
+# after
+https://asurascans.com/comics/blade-of-the-discarded-7ba78ec7 assume=127
+```
+
+Imported assumptions are still trusted, not verified: chapters at or below the
+cutoff are skipped without checking the files on disk.
 
 ## Database is the single source of truth
 

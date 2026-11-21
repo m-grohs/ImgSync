@@ -26,6 +26,10 @@ func Run(args []string) int {
 	switch args[0] {
 	case "add":
 		return commands.Add(args[1:])
+	case "export":
+		return commands.Export(args[1:])
+	case "import":
+		return commands.Import(args[1:])
 	case "list":
 		return commands.List(args[1:])
 	case "remove":
@@ -59,6 +63,9 @@ func usage(w io.Writer) {
 
 Usage:
   imgsync add <url...> [-f FILE]              register bookmark(s)
+  imgsync export [-o FILE] [--format FMT]     export bookmarks (txt, csv, json)
+  imgsync import FILE [--format FMT]          import bookmarks (txt, csv, json)
+                                              [--dry-run] [--update] [--online]
   imgsync list                                show registered bookmarks
   imgsync remove <id|slug>                    stop syncing, keep downloaded files
   imgsync reset [--yes]                       delete all state, start IDs from 1

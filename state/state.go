@@ -265,6 +265,158 @@ func (s *State) BookmarkID(slug string) (int64, error) {
 	return id, err
 }
 
+// ImportBookmark is one bookmark from an import file. Pointer fields are nil
+// when the field was not present in the file, which means "leave it alone" for
+// an existing bookmark. A *string value of "none" clears that field.
+type ImportBookmark struct {
+	Slug     string
+	URL      string
+	SeriesID string
+	Assume   *string
+	Except   *[]string
+	Title    *string
+	Location *string
+	Enabled  *bool
+}
+
+// ImportResult describes what happened to one imported bookmark.
+type ImportResult struct {
+	Slug    string
+	Created bool
+	Updated bool
+	Kept    bool
+}
+
+// ApplyImport creates missing bookmarks and, when update is true, applies the
+// supplied fields to existing ones. Everything is written in one transaction
+// so a failure cannot leave a half-imported database.
+func (s *State) ApplyImport(entries []ImportBookmark, update bool) ([]ImportResult, error) {
+	results := make([]ImportResult, 0, len(entries))
+	err := s.tx(func(tx *sql.Tx) error {
+		for _, e := range entries {
+			var count int
+			if err := tx.QueryRow(`SELECT COUNT(*) FROM bookmarks WHERE slug = ?`, e.Slug).Scan(&count); err != nil {
+				return err
+			}
+			if count == 0 {
+				if err := s.insertImportedBookmark(tx, e); err != nil {
+					return err
+				}
+				results = append(results, ImportResult{Slug: e.Slug, Created: true})
+				continue
+			}
+			if !update {
+				results = append(results, ImportResult{Slug: e.Slug, Kept: true})
+				continue
+			}
+			if err := s.updateImportedBookmark(tx, e); err != nil {
+				return err
+			}
+			results = append(results, ImportResult{Slug: e.Slug, Updated: true})
+		}
+		return nil
+	})
+	return results, err
+}
+
+func (s *State) insertImportedBookmark(tx *sql.Tx, e ImportBookmark) error {
+	assume, title, location := "", "", ""
+	if e.Assume != nil && *e.Assume != "none" {
+		assume = *e.Assume
+	}
+	if e.Title != nil && *e.Title != "none" {
+		title = *e.Title
+	}
+	if e.Location != nil && *e.Location != "none" {
+		location = *e.Location
+	}
+	enabled := 1
+	if e.Enabled != nil && !*e.Enabled {
+		enabled = 0
+	}
+	if _, err := tx.Exec(
+		`INSERT INTO bookmarks(slug, series_id, url, title, location, assume_synced_through, enabled, added_at)
+		 VALUES(?,?,?,?,?,?,?,?)`,
+		e.Slug, e.SeriesID, e.URL, title, location, assume, enabled, Now(),
+	); err != nil {
+		return err
+	}
+	if err := ensureBookmarkIDTx(tx, e.Slug); err != nil {
+		return err
+	}
+	return replaceAssumeExceptions(tx, e.Slug, e.Except)
+}
+
+func (s *State) updateImportedBookmark(tx *sql.Tx, e ImportBookmark) error {
+	sets := []string{"url = ?", "series_id = ?"}
+	args := []any{e.URL, e.SeriesID}
+	if e.Assume != nil {
+		value := *e.Assume
+		if value == "none" {
+			value = ""
+		}
+		sets = append(sets, "assume_synced_through = ?")
+		args = append(args, value)
+	}
+	if e.Title != nil {
+		value := *e.Title
+		if value == "none" {
+			value = ""
+		}
+		sets = append(sets, "title = ?")
+		args = append(args, value)
+	}
+	if e.Location != nil {
+		value := *e.Location
+		if value == "none" {
+			value = ""
+		}
+		sets = append(sets, "location = ?")
+		args = append(args, value)
+	}
+	if e.Enabled != nil {
+		value := 1
+		if !*e.Enabled {
+			value = 0
+		}
+		sets = append(sets, "enabled = ?")
+		args = append(args, value)
+	}
+	args = append(args, e.Slug)
+	if _, err := tx.Exec(`UPDATE bookmarks SET `+strings.Join(sets, ", ")+` WHERE slug = ?`, args...); err != nil {
+		return err
+	}
+	if e.Assume != nil && *e.Assume == "none" {
+		if _, err := tx.Exec(`DELETE FROM assume_exceptions WHERE slug = ?`, e.Slug); err != nil {
+			return err
+		}
+	}
+	return replaceAssumeExceptions(tx, e.Slug, e.Except)
+}
+
+func replaceAssumeExceptions(tx *sql.Tx, slug string, chapters *[]string) error {
+	if chapters == nil {
+		return nil
+	}
+	if _, err := tx.Exec(`DELETE FROM assume_exceptions WHERE slug = ?`, slug); err != nil {
+		return err
+	}
+	for _, number := range *chapters {
+		if _, err := tx.Exec(
+			`INSERT INTO assume_exceptions(slug, chapter) VALUES(?, ?) ON CONFLICT(slug, chapter) DO NOTHING`,
+			slug, number,
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func ensureBookmarkIDTx(tx *sql.Tx, slug string) error {
+	_, err := tx.Exec(`INSERT INTO bookmark_ids(slug) VALUES(?) ON CONFLICT(slug) DO NOTHING`, slug)
+	return err
+}
+
 // ListBookmarks returns all bookmarks with chapter/page counts.
 func (s *State) ListBookmarks() ([]Bookmark, error) {
 	return s.queryBookmarks(`SELECT ` + bookmarkColumns + ` FROM bookmarks b ORDER BY b.added_at, b.slug`)
