@@ -130,6 +130,8 @@ imgsync assume-synced 3 --clear              # remove the assumption
 imgsync unsync 3                             # mark all chapters for re-download
 imgsync unsync 3 "chapter 003" --dry-run
 imgsync remove 3                             # stop syncing, keep downloaded files
+imgsync reset                                # delete all state, IDs start at 1 (asks first)
+imgsync reset --yes                          # same, no prompt (for scripts)
 
 imgsync run
 imgsync run --series 3                       # only one bookmark
@@ -283,6 +285,14 @@ verified, so missing pages inside them stay missing.
 State lives in `~/.local/share/imgsync/state.sqlite`; logs in
 `~/.local/share/imgsync/imgsync.log`; config in
 `~/.config/imgsync/config.toml` (`output = "~/Pictures/ImgSync"`).
+
+`imgsync reset` deletes `state.sqlite` (and its SQLite sidecar files) and
+creates an empty database, so the next bookmark gets ID 1 again. All bookmarks,
+synced-page rows and run history are lost. Downloaded chapters, `config.toml`
+and the log file are kept. The command asks for confirmation on a terminal;
+scripts must pass `--yes` (or `-y`). Since the new DB has no record of synced
+pages, the next run asks before using an existing series folder (or use
+`imgsync run --yes`).
 
 If a legacy Python `state.sqlite` (it has a `series` table) is still at that
 path, ImgSync refuses to touch it and exits with an error. Move it away to let

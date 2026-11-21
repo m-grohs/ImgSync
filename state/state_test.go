@@ -2,6 +2,8 @@ package state
 
 import (
 	"database/sql"
+	"errors"
+	"os"
 	"path/filepath"
 	"strconv"
 	"testing"
@@ -396,5 +398,82 @@ func TestUpsertPage(t *testing.T) {
 	}
 	if page.URL != "https://cdn/001.webp" || page.ETag != "etag" || page.Size != 42 {
 		t.Fatalf("page = %+v", page)
+	}
+}
+
+func TestResetStartsBookmarkIDsAtOne(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.sqlite")
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, slug := range []string{"a", "b"} {
+		if _, err := st.UpsertBookmark(slug, "", "https://site/comics/"+slug, slug); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// WAL databases can leave sidecar files behind; all of them must go.
+	sidecars := []string{path + "-wal", path + "-shm", path + "-journal"}
+	for _, p := range sidecars {
+		if err := os.WriteFile(p, []byte("stale"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	keep := filepath.Join(filepath.Dir(path), "keep.txt")
+	if err := os.WriteFile(keep, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Reset(path); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range sidecars {
+		content, err := os.ReadFile(p)
+		if err == nil && string(content) == "stale" {
+			t.Fatalf("stale sidecar %s survived reset", p)
+		}
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("reading %s: %v", p, err)
+		}
+	}
+	if _, err := os.Stat(keep); err != nil {
+		t.Fatalf("unrelated file was removed: %v", err)
+	}
+
+	st, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	bookmarks, err := st.ListBookmarks()
+	if err != nil || len(bookmarks) != 0 {
+		t.Fatalf("bookmarks after reset = %d, err = %v", len(bookmarks), err)
+	}
+	if _, err := st.UpsertBookmark("new", "", "https://site/comics/new", "new"); err != nil {
+		t.Fatal(err)
+	}
+	id, err := st.BookmarkID("new")
+	if err != nil || id != 1 {
+		t.Fatalf("id after reset = %d, err = %v", id, err)
+	}
+}
+
+func TestResetWithoutExistingState(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.sqlite")
+	if err := Reset(path); err != nil {
+		t.Fatal(err)
+	}
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	bookmarks, err := st.ListBookmarks()
+	if err != nil || len(bookmarks) != 0 {
+		t.Fatalf("bookmarks = %d, err = %v", len(bookmarks), err)
 	}
 }
