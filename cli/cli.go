@@ -84,7 +84,7 @@ func usage(w io.Writer) {
 		{"version", "", "print build information"},
 	}
 
-	fmt.Fprintf(w, "%s %s %s\n", st.Name("imgsync"), ui.EmDash, "incremental image sync for comic series")
+	fmt.Fprintf(w, "%s %s %s\n", st.Bold("imgsync"), ui.EmDash, "incremental image sync for comic series")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, st.Bold("Usage"))
 	fmt.Fprintln(w, "  imgsync <command> [options]")
@@ -105,7 +105,7 @@ func usage(w io.Writer) {
 		if row.args != "" {
 			plain += " " + row.args
 		}
-		left := st.Name(row.command)
+		left := st.Bold(row.command)
 		if row.args != "" {
 			left += " " + st.Dim(row.args)
 		}
@@ -121,5 +121,5 @@ func usage(w io.Writer) {
 	fmt.Fprintf(w, "  %s %s\n", st.Dim(ui.Dot), "Preview the final messages with imgsync run --demo.")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, st.Bold("Global flags"))
-	fmt.Fprintf(w, "  %s  %s\n", st.Name("-v, --verbose"), "mirror detailed logs to the terminal")
+	fmt.Fprintf(w, "  %s  %s\n", st.Bold("-v, --verbose"), "mirror detailed logs to the terminal")
 }

@@ -40,16 +40,19 @@ func TestStyleDisabledForNonTerminal(t *testing.T) {
 
 func TestStyleEnabled(t *testing.T) {
 	s := Style{Enabled: true}
-	for name, got := range map[string]string{
-		"success": s.Success("done"),
-		"error":   s.Error("failed"),
-		"warning": s.Warning("wait"),
-		"bold":    s.Bold("head"),
-		"dim":     s.Dim("meta"),
-		"name":    s.Name("title"),
+	for _, tc := range []struct{ name, got, want string }{
+		{"success", s.Success("done"), "\x1b[1;32mdone\x1b[0m"},
+		{"error", s.Error("failed"), "\x1b[1;31mfailed\x1b[0m"},
+		{"warning", s.Warning("wait"), "\x1b[1;33mwait\x1b[0m"},
+		{"bold", s.Bold("head"), "\x1b[1mhead\x1b[0m"},
+		{"dim", s.Dim("meta"), "\x1b[2mmeta\x1b[0m"},
+		{"bar fill", s.BarFill("█"), "\x1b[32m█\x1b[0m"},
 	} {
-		if !strings.HasPrefix(got, "\x1b[") || !strings.HasSuffix(got, "\x1b[0m") {
-			t.Errorf("%s = %q, want ANSI wrapper", name, got)
+		if tc.got != tc.want {
+			t.Errorf("%s = %q, want %q", tc.name, tc.got, tc.want)
+		}
+		if strings.Contains(tc.got, ";36m") {
+			t.Errorf("%s = %q, teal must not be used", tc.name, tc.got)
 		}
 	}
 	if got := s.Success(""); got != "" {

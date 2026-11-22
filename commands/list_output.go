@@ -26,7 +26,7 @@ func renderListSummary(bookmarks []state.Bookmark, st ui.Style) string {
 		return b.String()
 	}
 
-	fmt.Fprintf(&b, "%s %s %s\n\n", st.Name("imgsync list"), ui.EmDash, st.Bold("registered bookmarks"))
+	fmt.Fprintf(&b, "%s %s %s\n\n", st.Bold("imgsync list"), ui.EmDash, st.Bold("registered bookmarks"))
 	sorted := append([]state.Bookmark(nil), bookmarks...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].ID < sorted[j].ID })
 	rows := make([]listRow, 0, len(sorted))
@@ -47,8 +47,8 @@ func renderListSummary(bookmarks []state.Bookmark, st ui.Style) string {
 	}
 	for _, row := range rows {
 		fmt.Fprintf(&b, "  %s%s  %s%s  %s\n",
-			st.Name(row.id), strings.Repeat(" ", idWidth-utf8.RuneCountInString(row.id)),
-			st.Name(row.name), strings.Repeat(" ", nameWidth-utf8.RuneCountInString(row.name)),
+			st.Bold(row.id), strings.Repeat(" ", idWidth-utf8.RuneCountInString(row.id)),
+			st.Bold(row.name), strings.Repeat(" ", nameWidth-utf8.RuneCountInString(row.name)),
 			row.assumed)
 	}
 	fmt.Fprintf(&b, "\n  %s\n", st.Dim(fmt.Sprintf("%d %s · 'imgsync list <id>' for details",
@@ -59,13 +59,13 @@ func renderListSummary(bookmarks []state.Bookmark, st ui.Style) string {
 func renderListDetail(bookmark state.Bookmark, exceptions map[string]bool, st ui.Style) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s %s %s\n\n",
-		st.Name(fmt.Sprintf("Bookmark #%d", bookmark.ID)), ui.EmDash, st.Bold(seriesName(bookmark)))
+		st.Bold(fmt.Sprintf("Bookmark #%d", bookmark.ID)), ui.EmDash, st.Bold(seriesName(bookmark)))
 
 	rows := []struct {
 		label string
 		value string
 	}{
-		{"Slug", st.Name(bookmark.Slug)},
+		{"Slug", st.Bold(bookmark.Slug)},
 		{"URL", bookmark.URL},
 		{"Series ID", valueOrDash(bookmark.SeriesID)},
 		{"Status", enabledValue(bookmark.Enabled, st)},
@@ -102,7 +102,7 @@ func assumedChapter(bookmark state.Bookmark, st ui.Style) string {
 	if bookmark.AssumeSyncedThrough == "" {
 		return st.Dim(ui.EmDash)
 	}
-	return st.Name(discover.ChapterLabel(bookmark.AssumeSyncedThrough))
+	return st.Bold(discover.ChapterLabel(bookmark.AssumeSyncedThrough))
 }
 
 func exceptionLabel(exceptions map[string]bool, st ui.Style) string {
@@ -114,7 +114,7 @@ func exceptionLabel(exceptions map[string]bool, st ui.Style) string {
 		chapters = append(chapters, chapter)
 	}
 	discover.SortChapters(chapters)
-	return st.Name(discover.ChapterRangeLabel(chapters))
+	return st.Bold(discover.ChapterRangeLabel(chapters))
 }
 
 func enabledValue(enabled bool, st ui.Style) string {

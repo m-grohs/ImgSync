@@ -58,9 +58,6 @@ func (s Style) Bold(text string) string { return s.paint("1", text) }
 // Dim renders secondary information.
 func (s Style) Dim(text string) string { return s.paint("2", text) }
 
-// Name renders a command, flag or series name.
-func (s Style) Name(text string) string { return s.paint("1;36", text) }
-
 // Success renders a green success headline.
 func (s Style) Success(text string) string { return s.paint("1;32", text) }
 

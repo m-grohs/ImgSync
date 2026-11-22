@@ -29,7 +29,7 @@ func renderRunReportStyled(result sync.Result, elapsed time.Duration, dryRun boo
 			if item.Err == nil && item.Summary.Failures() == 0 {
 				continue
 			}
-			fmt.Fprintf(&b, "  %s\n    %s\n", st.Name(seriesName(item.Bookmark)), st.Dim(problemDetail(item)))
+			fmt.Fprintf(&b, "  %s\n    %s\n", st.Bold(seriesName(item.Bookmark)), st.Dim(problemDetail(item)))
 		}
 		if result.Totals.New > 0 {
 			fmt.Fprintf(&b, "\n  %s\n", st.Dim(downloadCount(result.Totals, dryRun)))
@@ -54,7 +54,7 @@ func renderRunReportStyled(result sync.Result, elapsed time.Duration, dryRun boo
 			if len(item.Summary.NewChapters) == 0 {
 				continue
 			}
-			fmt.Fprintf(&b, "  %s %s %s\n", st.Name(seriesName(item.Bookmark)),
+			fmt.Fprintf(&b, "  %s %s %s\n", st.Bold(seriesName(item.Bookmark)),
 				st.Dim(ui.Dot), discover.ChapterRangeLabel(item.Summary.NewChapters))
 		}
 	case dryRun:

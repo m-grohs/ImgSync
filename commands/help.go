@@ -66,7 +66,7 @@ func printUsage(w io.Writer, fs *flag.FlagSet, synopsis string, args ...string) 
 	})
 
 	fmt.Fprintln(w)
-	fmt.Fprintf(w, "%s %s %s\n", st.Name("imgsync "+fs.Name()), ui.EmDash, synopsis)
+	fmt.Fprintf(w, "%s %s %s\n", st.Bold("imgsync "+fs.Name()), ui.EmDash, synopsis)
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, st.Bold("Usage"))
 	fmt.Fprintf(w, "  imgsync %s %s\n", fs.Name(), usageArgs)
@@ -81,7 +81,7 @@ func printUsage(w io.Writer, fs *flag.FlagSet, synopsis string, args ...string) 
 		}
 		for _, row := range rows {
 			fmt.Fprintf(w, "  %s%s  %s\n",
-				st.Name(row.label), strings.Repeat(" ", width-utf8.RuneCountInString(row.label)), row.usage)
+				st.Bold(row.label), strings.Repeat(" ", width-utf8.RuneCountInString(row.label)), row.usage)
 		}
 	}
 	fmt.Fprintln(w)
