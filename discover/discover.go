@@ -44,9 +44,14 @@ var (
 
 	chapterFolderRe = regexp.MustCompile(`(?i)^chapter[\s_-]+([0-9]+(?:\.[0-9]+)?)\s*$`)
 	pageFileRe      = regexp.MustCompile(`^(\d+)\.([A-Za-z0-9]+)$`)
+	chapterRangeRe  = regexp.MustCompile(`^\s*(\d+)\s*-\s*(\d+)\s*$`)
 
 	folderUnsafeRe = regexp.MustCompile(`[<>:"/\\|?*\x00-\x1f]`)
 )
+
+// maxChapterRange keeps a mistyped range from inserting an unbounded number of
+// chapter exceptions in one command.
+const maxChapterRange = 10000
 
 var imageExtensions = map[string]bool{
 	".webp": true, ".jpg": true, ".jpeg": true, ".png": true, ".gif": true, ".avif": true,
@@ -163,6 +168,51 @@ func NormalizeChapter(s string) string {
 		return fmt.Sprintf("%03d", int64(f))
 	}
 	return s
+}
+
+// ParseChapterSpecs expands chapter numbers and inclusive integer ranges
+// ("100-120") into canonical chapter numbers, sorted and without duplicates.
+func ParseChapterSpecs(specs []string) ([]string, error) {
+	var chapters []string
+	seen := map[string]bool{}
+	add := func(number string) {
+		if !seen[number] {
+			seen[number] = true
+			chapters = append(chapters, number)
+		}
+	}
+
+	for _, spec := range specs {
+		normalized := NormalizeChapter(spec)
+		if m := chapterRangeRe.FindStringSubmatch(normalized); m != nil {
+			start, err := strconv.Atoi(m[1])
+			if err != nil {
+				return nil, fmt.Errorf("invalid chapter range %q", spec)
+			}
+			end, err := strconv.Atoi(m[2])
+			if err != nil {
+				return nil, fmt.Errorf("invalid chapter range %q", spec)
+			}
+			if start < 1 || end < start {
+				return nil, fmt.Errorf("invalid chapter range %q", spec)
+			}
+			if end-start+1 > maxChapterRange {
+				return nil, fmt.Errorf("chapter range %q is too large (max %d chapters)", spec, maxChapterRange)
+			}
+			for n := start; n <= end; n++ {
+				add(fmt.Sprintf("%03d", n))
+			}
+			continue
+		}
+
+		f, err := strconv.ParseFloat(normalized, 64)
+		if err != nil || f <= 0 || math.IsNaN(f) {
+			return nil, fmt.Errorf("invalid chapter %q", spec)
+		}
+		add(normalized)
+	}
+	SortChapters(chapters)
+	return chapters, nil
 }
 
 // ChapterLabel is the chapter folder name: "Chapter 001", "Chapter 12.5".

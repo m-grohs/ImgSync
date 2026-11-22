@@ -189,6 +189,39 @@ func TestAssumeSynced(t *testing.T) {
 	}
 }
 
+func TestAddAssumeExceptions(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "state.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	if _, err := st.UpsertBookmark("x-abc123", "abc123", "https://site/comics/x-abc123", "X"); err != nil {
+		t.Fatal(err)
+	}
+	for _, chapters := range [][]string{
+		{"100", "101", "102", "100"},
+		{"101", "104"},
+		nil,
+	} {
+		if err := st.AddAssumeExceptions("x-abc123", chapters); err != nil {
+			t.Fatal(err)
+		}
+	}
+	exceptions, err := st.AssumeExceptions("x-abc123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(exceptions) != 4 {
+		t.Fatalf("exceptions = %v, want 4 chapters", exceptions)
+	}
+	for _, chapter := range []string{"100", "101", "102", "104"} {
+		if !exceptions[chapter] {
+			t.Errorf("missing exception for %s: %v", chapter, exceptions)
+		}
+	}
+}
+
 func TestOpenMigratesAssumeColumn(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.sqlite")
 	db, err := sql.Open("sqlite", path)

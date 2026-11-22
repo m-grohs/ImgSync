@@ -3,6 +3,8 @@ package discover
 import (
 	"encoding/json"
 	"html"
+	"slices"
+	"strings"
 	"testing"
 )
 
@@ -248,6 +250,40 @@ func TestNormalizeChapter(t *testing.T) {
 	for in, want := range cases {
 		if got := NormalizeChapter(in); got != want {
 			t.Fatalf("NormalizeChapter(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestParseChapterSpecs(t *testing.T) {
+	cases := []struct {
+		specs []string
+		want  []string
+	}{
+		{[]string{"166"}, []string{"166"}},
+		{[]string{"chapter 166"}, []string{"166"}},
+		{[]string{"12.5"}, []string{"12.5"}},
+		{[]string{"100-103"}, []string{"100", "101", "102", "103"}},
+		{[]string{"chapter 0100 - 0102"}, []string{"100", "101", "102"}},
+		{[]string{"100-102", "101", "105-105"}, []string{"100", "101", "102", "105"}},
+		{[]string{"12.5", "100-101"}, []string{"12.5", "100", "101"}},
+	}
+	for _, tc := range cases {
+		got, err := ParseChapterSpecs(tc.specs)
+		if err != nil {
+			t.Fatalf("ParseChapterSpecs(%v): %v", tc.specs, err)
+		}
+		if !slices.Equal(got, tc.want) {
+			t.Errorf("ParseChapterSpecs(%v) = %v, want %v", tc.specs, got, tc.want)
+		}
+	}
+}
+
+func TestParseChapterSpecsRejectsInvalid(t *testing.T) {
+	for _, spec := range []string{"", "abc", "0", "-1", "100-", "-100", "200-100", "12.5-15", "1-10001"} {
+		if _, err := ParseChapterSpecs([]string{spec}); err == nil {
+			t.Errorf("ParseChapterSpecs([%q]) did not fail", spec)
+		} else if !strings.Contains(err.Error(), "invalid") && !strings.Contains(err.Error(), "too large") {
+			t.Errorf("ParseChapterSpecs([%q]) error = %q, want a useful message", spec, err)
 		}
 	}
 }

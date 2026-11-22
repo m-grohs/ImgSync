@@ -79,7 +79,7 @@ func usage(w io.Writer) {
 		{"set-output", "<dir>", "set the folder new chapters download to"},
 		{"set-location", "<id|slug> <path>", "point a bookmark at its folder"},
 		{"assume-synced", "<id|slug> <chapter>", "trust chapters up to a cutoff as downloaded"},
-		{"unsync", "<id|slug> [chapter...]", "mark chapters for re-download"},
+		{"unsync", "<id|slug> [chapter|range...]", "mark chapters for re-download"},
 		{"run", "[options]", "sync every registered bookmark"},
 		{"version", "", "print build information"},
 	}

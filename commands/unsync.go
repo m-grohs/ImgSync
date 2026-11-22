@@ -12,14 +12,14 @@ import (
 // Unsync marks one or all chapters of a bookmark as not synced so the next
 // run downloads them again.
 func Unsync(args []string) int {
-	fs := newFlagSet("unsync", "mark chapters as not synced so they download again")
+	fs := newFlagSetWithUsage("unsync", "mark chapters as not synced so they download again", "<id|slug> [chapter|range...]")
 	dryRun := fs.Bool("dry-run", false, "report only, change nothing")
 	pos, err := parseArgs(fs, args)
 	if err != nil {
 		return flagExitCode(err)
 	}
 	if len(pos) < 1 {
-		fmt.Fprintln(os.Stderr, "usage: imgsync unsync <id|slug> [chapter...] [--dry-run]")
+		fmt.Fprintln(os.Stderr, "usage: imgsync unsync <id|slug> [chapter|range...] [--dry-run]")
 		return 2
 	}
 	ref := pos[0]
@@ -46,28 +46,21 @@ func Unsync(args []string) int {
 	var chapters []string
 	assumed := map[string]bool{}
 	if len(wanted) > 0 {
-		seen := map[string]bool{}
-		for _, arg := range wanted {
-			number := discover.NormalizeChapter(arg)
-			if number == "" {
-				fmt.Fprintf(os.Stderr, "warning: cannot parse chapter %q for %s\n", arg, slug)
-				continue
-			}
-			if !seen[number] {
-				seen[number] = true
-				chapters = append(chapters, number)
-			}
+		chapters, err = discover.ParseChapterSpecs(wanted)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			return 2
 		}
 		if bookmark.AssumeSyncedThrough != "" {
+			var exceptions []string
 			for _, number := range chapters {
-				if !discover.ChapterAtOrBefore(number, bookmark.AssumeSyncedThrough) {
-					continue
+				if discover.ChapterAtOrBefore(number, bookmark.AssumeSyncedThrough) {
+					assumed[number] = true
+					exceptions = append(exceptions, number)
 				}
-				assumed[number] = true
-				if *dryRun {
-					continue
-				}
-				if err := st.AddAssumeException(slug, number); err != nil {
+			}
+			if !*dryRun {
+				if err := st.AddAssumeExceptions(slug, exceptions); err != nil {
 					fmt.Fprintf(os.Stderr, "error: %v\n", err)
 					return 1
 				}
@@ -99,6 +92,7 @@ func Unsync(args []string) int {
 	discover.SortChapters(chapters)
 
 	total := int64(0)
+	var assumedChapters []string
 	for _, number := range chapters {
 		label := discover.ChapterLabel(number)
 		var n int64
@@ -112,13 +106,11 @@ func Unsync(args []string) int {
 			return 1
 		}
 		total += n
+		if assumed[number] && n == 0 {
+			assumedChapters = append(assumedChapters, number)
+			continue
+		}
 		switch {
-		case n == 0 && assumed[number]:
-			if *dryRun {
-				fmt.Printf("%s: assumed synced - would re-download next run\n", label)
-			} else {
-				fmt.Printf("%s: assumed synced - will re-download next run\n", label)
-			}
 		case n == 0:
 			fmt.Printf("%s: nothing synced\n", label)
 		case *dryRun:
@@ -126,6 +118,14 @@ func Unsync(args []string) int {
 		default:
 			fmt.Printf("%s: %d page(s) unsynced (will re-download next run)\n", label, n)
 		}
+	}
+	if len(assumedChapters) > 0 {
+		verb := "will"
+		if *dryRun {
+			verb = "would"
+		}
+		fmt.Printf("%s: assumed synced - %s re-download next run\n",
+			discover.ChapterRangeLabel(assumedChapters), verb)
 	}
 
 	if *dryRun {

@@ -133,6 +133,7 @@ imgsync assume-synced 3 123                  # trust chapters up to 123 as downl
 imgsync assume-synced 3 --clear              # remove the assumption
 imgsync unsync 3                             # mark all chapters for re-download
 imgsync unsync 3 "chapter 003" --dry-run
+imgsync unsync 2 100-120 140-145 166        # several chapters/ranges at once
 imgsync remove 3                             # stop syncing, keep downloaded files
 imgsync reset                                # delete all state, IDs start at 1 (asks first)
 imgsync reset --yes                          # same, no prompt (for scripts)
@@ -381,10 +382,13 @@ whether the file still exists or where it was moved.
 - Fully synced chapters are skipped during indexing, so later runs do not even
   fetch their chapter page. Use `imgsync run --verify` to re-index everything
   and re-check pages with conditional GETs.
-- `imgsync unsync <slug> [chapter...]` deletes the synced rows for one or all
-  chapters of a bookmark and marks them for indexing again; the next
-  `imgsync run` downloads them again (into the bookmark's current
-  location/output folder).
+- `imgsync unsync <slug> [chapter|range...]` deletes the synced rows for the
+  listed chapters (or all chapters when none are given) and marks them for
+  indexing again; the next `imgsync run` downloads them again (into the
+  bookmark's current location/output folder). Ranges are inclusive integer
+  chapters, and several chapters and ranges can be combined in one command:
+  `imgsync unsync 2 100-120 140-145 166`. Invalid or reversed ranges are
+  rejected instead of being ignored.
 - `imgsync set-location <id|slug> <path>` points a bookmark at a folder that
   already contains downloaded chapters. It scans `Chapter NNN` folders, records
   the pages it finds in the DB, and reports:
@@ -408,8 +412,9 @@ imgsync assume-synced <slug> --clear
 ```
 
 Chapters at or below the cutoff are skipped without fetching their chapter
-pages or images. Newer chapters sync normally. Individual chapters can be
-forced back into the download queue with `imgsync unsync <slug> <chapter>`;
+pages or images. Newer chapters sync normally. Individual chapters or ranges
+of chapters can be removed from the assumption with
+`imgsync unsync <slug> 104-200 250`; they will re-download on the next run.
 `imgsync unsync <slug>` clears the cutoff entirely. Assumed chapters are not
 verified, so missing pages inside them stay missing.
 

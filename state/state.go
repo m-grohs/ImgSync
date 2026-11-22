@@ -597,11 +597,30 @@ func (s *State) AssumeExceptions(slug string) (map[string]bool, error) {
 
 // AddAssumeException forces a chapter below the cutoff to be downloaded.
 func (s *State) AddAssumeException(slug, chapter string) error {
-	_, err := s.db.Exec(
-		`INSERT INTO assume_exceptions(slug, chapter) VALUES(?, ?) ON CONFLICT(slug, chapter) DO NOTHING`,
-		slug, chapter,
-	)
-	return err
+	return s.AddAssumeExceptions(slug, []string{chapter})
+}
+
+// AddAssumeExceptions forces several chapters below the cutoff to be
+// downloaded. Existing exceptions are kept, and all inserts are atomic.
+func (s *State) AddAssumeExceptions(slug string, chapters []string) error {
+	if len(chapters) == 0 {
+		return nil
+	}
+	return s.tx(func(tx *sql.Tx) error {
+		stmt, err := tx.Prepare(
+			`INSERT INTO assume_exceptions(slug, chapter) VALUES(?, ?) ON CONFLICT(slug, chapter) DO NOTHING`,
+		)
+		if err != nil {
+			return err
+		}
+		defer stmt.Close()
+		for _, chapter := range chapters {
+			if _, err := stmt.Exec(slug, chapter); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 // RecordBookmarkRun stores the last run time and result for a bookmark.
