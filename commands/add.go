@@ -2,7 +2,6 @@ package commands
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"log/slog"
 	"os"
@@ -26,14 +25,13 @@ func (m *multiFlag) Set(v string) error {
 
 // Add registers one or more series URLs as bookmarks.
 func Add(args []string) int {
-	fs := flag.NewFlagSet("add", flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
+	fs := newFlagSet("add", "register one or more series URLs as bookmarks")
 	var files multiFlag
-	fs.Var(&files, "f", "read URLs from a file (one per line)")
-	fs.Var(&files, "file", "read URLs from a file (one per line)")
+	fs.Var(&files, "f", "read URLs from `FILE` (one per line)")
+	fs.Var(&files, "file", "read URLs from `FILE` (one per line)")
 	pos, err := parseArgs(fs, args)
 	if err != nil {
-		return 2
+		return flagExitCode(err)
 	}
 
 	urls := append([]string{}, pos...)

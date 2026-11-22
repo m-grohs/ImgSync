@@ -1,9 +1,29 @@
 package cli
 
 import (
+	"bytes"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func TestUsage(t *testing.T) {
+	var buf bytes.Buffer
+	usage(&buf)
+	for _, want := range []string{
+		"imgsync — incremental image sync for comic series",
+		"Usage",
+		"Commands",
+		"imgsync run",
+		"--demo",
+		"Global flags",
+		"-v, --verbose",
+	} {
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("usage =\n%s\nwant %q", buf.String(), want)
+		}
+	}
+}
 
 func TestRunExitCodes(t *testing.T) {
 	home := t.TempDir()

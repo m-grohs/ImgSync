@@ -4,8 +4,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
+	"unicode/utf8"
 
 	"imgsync/commands"
+	"imgsync/internal/ui"
 	"imgsync/logging"
 )
 
@@ -58,33 +61,65 @@ func Run(args []string) int {
 	}
 }
 
+type usageRow struct {
+	command string
+	args    string
+	detail  string
+}
+
 func usage(w io.Writer) {
-	fmt.Fprint(w, `imgsync - incremental image sync for comic series
+	st := ui.Style{Enabled: ui.ColorsEnabled(w)}
+	rows := []usageRow{
+		{"add", "<url...>", "register one or more series URLs"},
+		{"export", "[-o FILE]", "export bookmarks as txt, csv or json"},
+		{"import", "FILE", "import bookmarks from a file"},
+		{"list", "", "show registered bookmarks"},
+		{"remove", "<id|slug>", "stop syncing, keep downloaded files"},
+		{"reset", "[--yes]", "delete all state and restart IDs at 1"},
+		{"set-output", "<dir>", "set the folder new chapters download to"},
+		{"set-location", "<id|slug> <path>", "point a bookmark at its folder"},
+		{"assume-synced", "<id|slug> <chapter>", "trust chapters up to a cutoff as downloaded"},
+		{"unsync", "<id|slug> [chapter...]", "mark chapters for re-download"},
+		{"run", "[options]", "sync every registered bookmark"},
+		{"version", "", "print build information"},
+	}
 
-Usage:
-  imgsync add <url...> [-f FILE]              register bookmark(s)
-  imgsync export [-o FILE] [--format FMT]     export bookmarks (txt, csv, json)
-  imgsync import FILE [--format FMT]          import bookmarks (txt, csv, json)
-                                              [--dry-run] [--update] [--online]
-  imgsync list                                show registered bookmarks
-  imgsync remove <id|slug>                    stop syncing, keep downloaded files
-  imgsync reset [--yes]                       delete all state, start IDs from 1
-  imgsync set-output <dir>                    set the folder new chapters download to
-  imgsync set-location <id|slug> <path>       point a bookmark at its folder [--dry-run]
-                                             [--assume-synced-through N]
-  imgsync assume-synced <id|slug> <chapter>   trust chapters up to N as downloaded
-  imgsync assume-synced <id|slug> --clear     remove the assumption
-  imgsync unsync <id|slug> [chapter...]       mark chapter(s) unsynced [--dry-run]
-  imgsync run [--series ID|SLUG] [--dry-run] [--verify] [--yes] [--limit N] [--no-progress] [--verbose]
-  imgsync version                             print build information
+	fmt.Fprintf(w, "%s %s %s\n", st.Name("imgsync"), ui.EmDash, "incremental image sync for comic series")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, st.Bold("Usage"))
+	fmt.Fprintln(w, "  imgsync <command> [options]")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, st.Bold("Commands"))
+	width := 0
+	for _, row := range rows {
+		plain := row.command
+		if row.args != "" {
+			plain += " " + row.args
+		}
+		if n := utf8.RuneCountInString(plain); n > width {
+			width = n
+		}
+	}
+	for _, row := range rows {
+		plain := row.command
+		if row.args != "" {
+			plain += " " + row.args
+		}
+		left := st.Name(row.command)
+		if row.args != "" {
+			left += " " + st.Dim(row.args)
+		}
+		fmt.Fprintf(w, "  %s%s  %s\n", left, strings.Repeat(" ", width-utf8.RuneCountInString(plain)), row.detail)
+	}
 
-A bookmark can be referenced by its list ID (e.g. 3), a unique slug prefix,
-or the full slug. "imgsync list" shows the IDs and slugs.
-
-The run command shows a progress bar with an ETA on interactive terminals.
-Set IMGSYNC_NO_PROGRESS=1 or pass --no-progress to hide it.
-
-Global flags:
-  -v, --verbose
-`)
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, st.Bold("Bookmarks"))
+	fmt.Fprintf(w, "  %s %s\n", st.Dim(ui.Dot), "Use a list ID, unique slug prefix, or full slug from imgsync list.")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, st.Bold("Output"))
+	fmt.Fprintf(w, "  %s %s\n", st.Dim(ui.Dot), "Live progress bars appear on interactive terminals; detailed logs stay in the log file.")
+	fmt.Fprintf(w, "  %s %s\n", st.Dim(ui.Dot), "Preview the final messages with imgsync run --demo.")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, st.Bold("Global flags"))
+	fmt.Fprintf(w, "  %s  %s\n", st.Name("-v, --verbose"), "mirror detailed logs to the terminal")
 }

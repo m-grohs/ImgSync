@@ -2,11 +2,11 @@ package commands
 
 import (
 	"context"
-	"flag"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
-	"strings"
+	"time"
 
 	"imgsync/config"
 	"imgsync/fetch"
@@ -18,25 +18,31 @@ import (
 
 // Run syncs every registered bookmark.
 func Run(args []string) int {
-	fs := flag.NewFlagSet("run", flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
+	fs := newFlagSet("run", "sync every registered bookmark")
 	var series multiFlag
-	fs.Var(&series, "series", "only sync this bookmark: id, unique slug prefix or slug (repeatable)")
+	fs.Var(&series, "series", "only sync this bookmark: `ID|SLUG` (repeatable)")
 	dryRun := fs.Bool("dry-run", false, "show what would download")
 	verify := fs.Bool("verify", false, "conditional GET for pages the db marks synced")
-	limit := fs.Int("limit", -1, "stop after N new pages per bookmark")
+	limit := fs.Int("limit", -1, "stop after `N` new pages per bookmark (default: no limit)")
 	noProgress := fs.Bool("no-progress", false, "hide the progress bar")
-	verbose := fs.Bool("verbose", false, "show per-chapter details while indexing")
+	verbose := fs.Bool("verbose", false, "show detailed log output")
 	fs.BoolVar(verbose, "v", false, "alias for --verbose")
 	yes := fs.Bool("yes", false, "use an existing series folder without asking")
 	fs.BoolVar(yes, "y", false, "alias for --yes")
+	var demo demoMode
+	fs.Var(&demo, "demo", "preview output without syncing: `MODE` (success, empty, error, interrupt)")
 	if _, err := parseArgs(fs, args); err != nil {
-		return 2
+		return flagExitCode(err)
 	}
 	if *noProgress {
 		progress.SetEnabled(false)
 	}
 	logging.SetVerbose(*verbose)
+
+	if demo != "" {
+		runDemo(os.Stdout, string(demo))
+		return 0
+	}
 
 	var limitPtr *int
 	if *limit >= 0 {
@@ -69,21 +75,27 @@ func Run(args []string) int {
 	f := fetch.New()
 	defer f.Close()
 
-	totals, failures, err := sync.SyncAll(ctx, f, st, sync.Options{
+	start := time.Now()
+	result, err := sync.SyncAll(ctx, f, st, sync.Options{
 		Slugs:     series,
 		DryRun:    *dryRun,
 		Verify:    *verify,
 		AssumeYes: *yes,
 		Limit:     limitPtr,
 	})
-	if err != nil {
+	elapsed := time.Since(start)
+
+	switch {
+	case errors.Is(err, context.Canceled):
+		fmt.Fprint(os.Stdout, renderInterrupt(result, elapsed))
+		return 130
+	case err != nil:
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		return 1
 	}
 
-	fmt.Printf("done: %s\n", totals.Text())
-	if len(failures) > 0 {
-		fmt.Fprintf(os.Stderr, "bookmarks with issues: %s\n", strings.Join(failures, ", "))
+	fmt.Fprint(os.Stdout, renderRunReport(result, elapsed, *dryRun))
+	if len(result.Failures()) > 0 {
 		return 1
 	}
 	return 0

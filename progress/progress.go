@@ -11,13 +11,15 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
+
+	"imgsync/internal/ui"
 )
 
 const (
-	barWidth     = 24
-	labelWidth   = 32
-	detailWidth  = 14
+	maxBarWidth  = 24
 	redrawPeriod = 100 * time.Millisecond
+	defaultWidth = 90
 )
 
 var (
@@ -28,17 +30,10 @@ var (
 )
 
 func detectEnabled() bool {
-	if noProgressSet() {
+	if noProgressSet() || os.Getenv("TERM") == "dumb" {
 		return false
 	}
-	if os.Getenv("TERM") == "dumb" {
-		return false
-	}
-	info, err := os.Stderr.Stat()
-	if err != nil {
-		return false
-	}
-	return info.Mode()&os.ModeCharDevice != 0
+	return ui.IsTerminal(os.Stderr)
 }
 
 // noProgressSet reports whether IMGSYNC_NO_PROGRESS is explicitly true.
@@ -139,7 +134,7 @@ func (b *Bar) SetLabel(label string) {
 }
 
 // SetDetail replaces the secondary label (for example the current chapter)
-// shown between the label and the bar.
+// shown after the primary label.
 func (b *Bar) SetDetail(detail string) {
 	mu.Lock()
 	defer mu.Unlock()
@@ -160,7 +155,23 @@ func (b *Bar) Finish() {
 	if !enabled || active != b {
 		return
 	}
-	fmt.Fprint(out, "\r\x1b[K", b.line(), "\n")
+	fmt.Fprint(out, "\r\x1b[K", b.lineLocked(), "\n")
+	active = nil
+}
+
+// Clear removes a transient bar without leaving a line behind. Indexing
+// phases and per-series download bars use it so only the live bar is visible.
+func (b *Bar) Clear() {
+	mu.Lock()
+	defer mu.Unlock()
+	if b.finished {
+		return
+	}
+	b.finished = true
+	if !enabled || active != b {
+		return
+	}
+	fmt.Fprint(out, "\r\x1b[K")
 	active = nil
 }
 
@@ -169,19 +180,20 @@ func (b *Bar) drawLocked() {
 		return
 	}
 	b.lastDraw = time.Now()
-	fmt.Fprint(out, "\r\x1b[K", b.line())
+	fmt.Fprint(out, "\r\x1b[K", b.lineLocked())
 }
 
-func (b *Bar) line() string {
-	eta := "--"
-	if d, ok := b.eta(); ok {
-		eta = formatDuration(d)
+func (b *Bar) lineLocked() string {
+	eta := ""
+	if d, ok := b.eta(); ok && b.done < b.total {
+		eta = "~" + ui.Duration(d)
 	}
 	rate := 0.0
 	if elapsed := time.Since(b.start); elapsed > 0 {
 		rate = float64(b.done) / elapsed.Seconds()
 	}
-	return barLine(b.label, b.detail, b.unit, b.done, b.total, rate, eta)
+	return barLineStyled(b.label, b.detail, b.unit, b.done, b.total, rate, eta,
+		ui.Style{Enabled: ui.ColorsEnabled(out)})
 }
 
 func (b *Bar) eta() (time.Duration, bool) {
@@ -197,6 +209,10 @@ func (b *Bar) eta() (time.Duration, bool) {
 }
 
 func barLine(label, detail, unit string, done, total int, rate float64, eta string) string {
+	return barLineStyled(label, detail, unit, done, total, rate, eta, ui.Style{})
+}
+
+func barLineStyled(label, detail, unit string, done, total int, rate float64, eta string, st ui.Style) string {
 	if total < 0 {
 		total = 0
 	}
@@ -205,6 +221,15 @@ func barLine(label, detail, unit string, done, total int, rate float64, eta stri
 	}
 	if done > total {
 		done = total
+	}
+
+	width := terminalWidth()
+	barWidth := maxBarWidth
+	switch {
+	case width < 70:
+		barWidth = 10
+	case width < 80:
+		barWidth = 16
 	}
 
 	pct := 100
@@ -216,39 +241,66 @@ func barLine(label, detail, unit string, done, total int, rate float64, eta stri
 	if filled > barWidth {
 		filled = barWidth
 	}
-	bar := strings.Repeat("█", filled) + strings.Repeat("░", barWidth-filled)
+	bar := "[" + strings.Repeat("█", filled) + strings.Repeat("░", barWidth-filled) + "]"
 
 	rateText := ""
 	if done > 0 && rate > 0 {
 		rateText = fmt.Sprintf("  %.1f/s", rate)
 	}
-	labelText := truncateLabel(label, labelWidth)
-	if detail != "" {
-		labelText += "  " + truncateLabel(detail, detailWidth)
+	etaText := ""
+	if eta != "" {
+		etaText = "  " + eta
 	}
-	return fmt.Sprintf(
-		"%s  %d/%d %s  [%s]  %3d%%%s  ETA %s",
-		labelText, done, total, unit, bar, pct, rateText, eta,
-	)
+	counts := fmt.Sprintf("%d/%d %s", done, total, unit)
+	suffix := fmt.Sprintf("  %s  %s  %3d%%%s%s", counts, bar, pct, rateText, etaText)
+	prefix := fitLabel(label, detail, width-runeLen(suffix))
+
+	return st.Bold(prefix) +
+		"  " + counts +
+		"  " + st.Dim("[") + st.BarFill(strings.Repeat("█", filled)) +
+		st.Dim(strings.Repeat("░", barWidth-filled)) + st.Dim("]") +
+		fmt.Sprintf("  %s", st.Bold(fmt.Sprintf("%3d%%", pct))) +
+		st.Dim(rateText) + st.Dim(etaText)
 }
 
-func formatDuration(d time.Duration) string {
-	if d < 0 {
-		d = 0
+func terminalWidth() int {
+	if raw := os.Getenv("COLUMNS"); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n >= 60 && n <= 300 {
+			return n
+		}
 	}
-	secs := int((d + time.Second - 1) / time.Second)
-	if secs < 60 {
-		return fmt.Sprintf("0:%02d", secs)
-	}
-	mins := secs / 60
-	secs %= 60
-	if mins < 60 {
-		return fmt.Sprintf("%d:%02d", mins, secs)
-	}
-	hours := mins / 60
-	mins %= 60
-	return fmt.Sprintf("%d:%02d:%02d", hours, mins, secs)
+	return defaultWidth
 }
+
+// fitLabel keeps the series name and, when there is room, the detail on one
+// line. The series name wins when space is tight.
+func fitLabel(label, detail string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	if detail == "" {
+		return truncateLabel(label, max)
+	}
+	const sep = " " + ui.Dot + " "
+	if runeLen(label)+runeLen(sep)+runeLen(detail) <= max {
+		return label + sep + detail
+	}
+	detailMax := max / 2
+	if detailMax > 16 {
+		detailMax = 16
+	}
+	if detailMax < 1 {
+		return truncateLabel(label, max)
+	}
+	shortDetail := truncateLabel(detail, detailMax)
+	labelMax := max - runeLen(sep) - runeLen(shortDetail)
+	if labelMax < 4 {
+		return truncateLabel(label, max)
+	}
+	return truncateLabel(label, labelMax) + sep + shortDetail
+}
+
+func runeLen(s string) int { return utf8.RuneCountInString(s) }
 
 func truncateLabel(s string, max int) string {
 	runes := []rune(s)
@@ -263,7 +315,7 @@ func truncateLabel(s string, max int) string {
 
 // Writer wraps an output writer (normally stderr) so log records clear the
 // active bar, write their line and then redraw the bar.
-func Writer(out io.Writer) io.Writer { return &barWriter{out: out} }
+func Writer(w io.Writer) io.Writer { return &barWriter{out: w} }
 
 type barWriter struct {
 	out io.Writer

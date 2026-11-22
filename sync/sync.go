@@ -110,6 +110,33 @@ func plural(n int, one, many string) string {
 	return many
 }
 
+// BookmarkResult is the outcome of syncing one bookmark.
+type BookmarkResult struct {
+	Bookmark state.Bookmark
+	Summary  Summary
+	Skipped  bool
+	SkipNote string
+	Err      error
+}
+
+// Result is the outcome of a sync run, including one entry per bookmark that
+// was reached before the run finished or was interrupted.
+type Result struct {
+	Totals    Summary
+	Bookmarks []BookmarkResult
+}
+
+// Failures returns the slugs of bookmarks that failed or had partial failures.
+func (r Result) Failures() []string {
+	var out []string
+	for _, b := range r.Bookmarks {
+		if b.Err != nil || b.Summary.Failures() > 0 {
+			out = append(out, b.Bookmark.Slug)
+		}
+	}
+	return out
+}
+
 // AddSeries registers a series URL as a bookmark.
 func AddSeries(ctx context.Context, f *fetch.Fetcher, st *state.State, rawURL string) (slug, title string, created bool, err error) {
 	canonical, slug, err := discover.ParseSeriesURL(rawURL)
@@ -200,7 +227,9 @@ func syncPage(
 
 	row, err := st.GetPage(slug, number, page.Index)
 	if err != nil {
-		slog.Error("page lookup failed", "bookmark", slug, "chapter", number, "page", page.Index+1, "error", err)
+		if ctx.Err() == nil {
+			slog.Error("page lookup failed", "bookmark", slug, "chapter", number, "page", page.Index+1, "error", err)
+		}
 		return "failed"
 	}
 
@@ -227,7 +256,9 @@ func syncPage(
 		img, err = f.FetchImage(ctx, page.URL, "", "")
 	}
 	if err != nil {
-		slog.Error("fetch failed", "url", page.URL, "error", err)
+		if ctx.Err() == nil {
+			slog.Error("fetch failed", "url", page.URL, "error", err)
+		}
 		return "failed"
 	}
 	if img == nil {
@@ -250,7 +281,9 @@ func syncPage(
 	}
 
 	if _, err := AtomicWrite(dest, img.Body); err != nil {
-		slog.Error("write failed", "path", dest, "error", err)
+		if ctx.Err() == nil {
+			slog.Error("write failed", "path", dest, "error", err)
+		}
 		return "failed"
 	}
 	if old := supersededPath(row, dest, chapterDir, page.Index); old != "" {
@@ -352,6 +385,9 @@ func discoverSeries(
 	summary := Summary{}
 	slug := bookmark.Slug
 
+	if err := ctx.Err(); err != nil {
+		return nil, summary, err
+	}
 	doc, err := f.GetText(ctx, bookmark.URL)
 	if err != nil {
 		return nil, summary, err
@@ -437,6 +473,9 @@ func indexSeries(
 	var plans []chapterPlan
 	pendingTotal := 0
 	for i, ref := range refs {
+		if err := ctx.Err(); err != nil {
+			return plans, summary, err
+		}
 		if limit != nil && *limit <= 0 {
 			slog.Info("download limit reached", "bookmark", slug)
 			onRemaining(len(refs) - i)
@@ -453,6 +492,9 @@ func indexSeries(
 		chapterDoc, err := f.GetText(ctx, chapterURL)
 		onChapter()
 		if err != nil {
+			if ctx.Err() != nil {
+				return plans, summary, ctx.Err()
+			}
 			slog.Error("chapter fetch failed", "bookmark", slug, "chapter", ref.Number, "error", err)
 			summary.FailedChapters++
 			summary.Chapters++
@@ -523,8 +565,8 @@ func displayName(b state.Bookmark) string {
 	return b.Slug
 }
 
-// downloadSeries downloads the pages of every plan. Each chapter gets its own
-// progress bar, and finished bars stay on screen as separate lines.
+// downloadSeries downloads the pages of every plan under one live bar per
+// series. The bar counts pages and switches its detail to the current chapter.
 func downloadSeries(
 	ctx context.Context,
 	f *fetch.Fetcher,
@@ -539,18 +581,30 @@ func downloadSeries(
 	slug := bookmark.Slug
 	needsSynced := !verify || dryRun
 
+	total := 0
 	for _, plan := range plans {
+		if needsSynced {
+			total += plan.pending
+		} else {
+			total += len(plan.chapter.Pages)
+		}
+	}
+	if limit != nil && needsSynced && total > *limit {
+		total = *limit
+	}
+	bar := progress.New(displayName(bookmark), "", "pages", total)
+	defer bar.Clear()
+
+	for _, plan := range plans {
+		if err := ctx.Err(); err != nil {
+			return summary, err
+		}
 		if limit != nil && *limit <= 0 {
-			slog.Info("download limit reached", "bookmark", slug)
 			break
 		}
 		ref := plan.ref
 		chapter := plan.chapter
-		barTotal := plan.pending
-		if limit != nil && barTotal > *limit {
-			barTotal = *limit
-		}
-		bar := progress.New(displayName(bookmark), discover.ChapterLabel(ref.Number), "pages", barTotal)
+		bar.SetDetail(discover.ChapterLabel(ref.Number))
 
 		if err := st.SetChapter(slug, ref.Number, chapter.URL, state.ChapterStatusOK, len(chapter.Pages)); err != nil {
 			slog.Error("state update failed", "bookmark", slug, "chapter", ref.Number, "error", err)
@@ -559,6 +613,9 @@ func downloadSeries(
 
 		handled, chapterFailed, chapterNew := 0, 0, 0
 		for start := 0; start < len(chapter.Pages); start += batchSize {
+			if err := ctx.Err(); err != nil {
+				return summary, err
+			}
 			if limit != nil && *limit <= 0 {
 				break
 			}
@@ -572,6 +629,9 @@ func downloadSeries(
 			}
 
 			results := syncPages(ctx, f, st, slug, ref.Number, chunk, chapterDir, dryRun, verify)
+			if err := ctx.Err(); err != nil {
+				return summary, err
+			}
 			handled += len(results)
 			for _, result := range results {
 				switch result {
@@ -595,7 +655,6 @@ func downloadSeries(
 				}
 			}
 		}
-		bar.Finish()
 
 		if chapterNew > 0 {
 			summary.NewChapters = append(summary.NewChapters, ref.Number)
@@ -791,10 +850,11 @@ type Options struct {
 
 // SyncAll syncs every enabled bookmark (optionally filtered by slug). The
 // page limit is applied independently to each bookmark.
-func SyncAll(ctx context.Context, f *fetch.Fetcher, st *state.State, opts Options) (Summary, []string, error) {
+func SyncAll(ctx context.Context, f *fetch.Fetcher, st *state.State, opts Options) (Result, error) {
+	result := Result{}
 	bookmarks, err := st.EnabledBookmarks()
 	if err != nil {
-		return Summary{}, nil, err
+		return result, err
 	}
 
 	if len(opts.Slugs) > 0 {
@@ -808,7 +868,7 @@ func SyncAll(ctx context.Context, f *fetch.Fetcher, st *state.State, opts Option
 		}
 		for _, s := range opts.Slugs {
 			if !known[s] {
-				return Summary{}, nil, fmt.Errorf("unknown or disabled bookmark: %s", s)
+				return result, fmt.Errorf("unknown or disabled bookmark: %s", s)
 			}
 		}
 		filtered := bookmarks[:0]
@@ -821,7 +881,7 @@ func SyncAll(ctx context.Context, f *fetch.Fetcher, st *state.State, opts Option
 	}
 
 	if len(bookmarks) == 0 {
-		return Summary{}, nil, fmt.Errorf("no bookmarks registered - add one with: imgsync add <url>")
+		return result, fmt.Errorf("no bookmarks registered - add one with: imgsync add <url>")
 	}
 
 	type seriesRun struct {
@@ -860,6 +920,9 @@ func SyncAll(ctx context.Context, f *fetch.Fetcher, st *state.State, opts Option
 		interactive = *opts.Interactive
 	}
 	for i := range runs {
+		if err := ctx.Err(); err != nil {
+			return result, err
+		}
 		run := &runs[i]
 		if run.bookmark.Location != "" {
 			continue
@@ -891,7 +954,11 @@ func SyncAll(ctx context.Context, f *fetch.Fetcher, st *state.State, opts Option
 	// First discover every series page. The short-lived bar shows progress
 	// while the total number of chapters is still unknown.
 	discoveryBar := progress.New("Indexing", "", "series", len(runs))
+	defer discoveryBar.Clear()
 	for i := range runs {
+		if err := ctx.Err(); err != nil {
+			return result, err
+		}
 		run := &runs[i]
 		if run.skip {
 			discoveryBar.Add(1)
@@ -902,8 +969,7 @@ func SyncAll(ctx context.Context, f *fetch.Fetcher, st *state.State, opts Option
 		if run.outRoot == "" {
 			run.outRoot, err = seriesOutRoot(st, b, opts.DryRun)
 			if err != nil {
-				discoveryBar.Finish()
-				return Summary{}, nil, err
+				return result, err
 			}
 		}
 		if err := normalizeChapterFolders(st, b.Slug, run.outRoot, opts.DryRun); err != nil {
@@ -914,7 +980,7 @@ func SyncAll(ctx context.Context, f *fetch.Fetcher, st *state.State, opts Option
 		run.refs, run.summary, run.err = discoverSeries(ctx, f, st, b, opts.Verify)
 		discoveryBar.Add(1)
 	}
-	discoveryBar.Finish()
+	discoveryBar.Clear()
 
 	// The chapter bar counts only chapters whose page is actually requested.
 	// --limit can shorten a series, so the total shrinks when that happens.
@@ -925,7 +991,11 @@ func SyncAll(ctx context.Context, f *fetch.Fetcher, st *state.State, opts Option
 		}
 	}
 	indexBar := progress.New("Indexing", "", "chapters", totalChapters)
+	defer indexBar.Clear()
 	for i := range runs {
+		if err := ctx.Err(); err != nil {
+			return result, err
+		}
 		run := &runs[i]
 		if run.err != nil || run.skip {
 			continue
@@ -944,56 +1014,76 @@ func SyncAll(ctx context.Context, f *fetch.Fetcher, st *state.State, opts Option
 		run.err = err
 	}
 	indexBar.SetDetail("")
-	indexBar.Finish()
+	indexBar.Clear()
 
-	totals := Summary{}
-	var failures []string
 	for _, run := range runs {
+		if err := ctx.Err(); err != nil {
+			break
+		}
 		b := run.bookmark
 		summary := run.summary
 		err := run.err
+		item := BookmarkResult{
+			Bookmark: b,
+			Summary:  summary,
+			Skipped:  run.skip,
+			SkipNote: run.skipNote,
+			Err:      err,
+		}
 		if !run.skip && err == nil {
 			var downloaded Summary
 			downloaded, err = downloadSeries(ctx, f, st, b, run.outRoot, run.plans, opts.DryRun, opts.Verify, run.limit)
-			if err == nil {
-				summary.Add(downloaded)
-			}
+			// Keep pages that finished before a cancellation or error so the
+			// interrupt summary can report saved progress accurately.
+			summary.Add(downloaded)
+			item.Summary = summary
+			item.Err = err
 		}
 
-		result := "ok"
+		outcome := "ok"
 		note := ""
 		newPages, skipped, failed, locked := 0, 0, 0, 0
 
 		switch {
-		case run.skip && err == nil:
-			result = "skipped"
-			note = run.skipNote
+		case item.Skipped && err == nil:
+			outcome = "skipped"
+			note = item.SkipNote
 			slog.Info("bookmark skipped", "bookmark", b.Slug, "note", note)
 		case err != nil:
-			failed = 1
-			totals.FailedBookmarks++
-			result = "error"
+			result.Totals.Add(item.Summary)
+			newPages, skipped, failed, locked = item.Summary.New, item.Summary.Skipped, item.Summary.Failures(), item.Summary.Locked
+			failed++
+			result.Totals.FailedBookmarks++
+			outcome = "error"
 			note = "error: " + err.Error()
-			failures = append(failures, b.Slug)
-			slog.Error("bookmark failed", "bookmark", b.Slug, "error", err)
+			if ctx.Err() == nil {
+				slog.Error("bookmark failed", "bookmark", b.Slug, "error", err)
+			}
 		default:
-			totals.Add(summary)
-			newPages, skipped, failed, locked = summary.New, summary.Skipped, summary.Failures(), summary.Locked
-			note = summary.Note()
-			if summary.Failures() > 0 {
-				result = "partial"
-				failures = append(failures, b.Slug)
+			result.Totals.Add(item.Summary)
+			newPages, skipped, failed, locked = item.Summary.New, item.Summary.Skipped, item.Summary.Failures(), item.Summary.Locked
+			note = item.Summary.Note()
+			if item.Summary.Failures() > 0 {
+				outcome = "partial"
 			}
 			slog.Info("synced", "bookmark", b.Slug, "note", note)
 		}
 
+		if ctx.Err() != nil {
+			outcome = "interrupted"
+			note = item.Summary.Note()
+		}
 		if err := st.RecordRun(b.Slug, run.started, state.Now(), newPages, skipped, failed, locked, note); err != nil {
 			slog.Error("failed to record run", "bookmark", b.Slug, "error", err)
 		}
-		if err := st.RecordBookmarkRun(b.Slug, result); err != nil {
+		if err := st.RecordBookmarkRun(b.Slug, outcome); err != nil {
 			slog.Error("failed to record bookmark run", "bookmark", b.Slug, "error", err)
 		}
+		result.Bookmarks = append(result.Bookmarks, item)
 	}
 
-	return totals, failures, nil
+	if err := ctx.Err(); err != nil {
+		return result, err
+	}
+	return result, nil
 }

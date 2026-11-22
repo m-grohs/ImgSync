@@ -1,7 +1,6 @@
 package commands
 
 import (
-	"flag"
 	"fmt"
 	"os"
 	"text/tabwriter"
@@ -13,10 +12,9 @@ import (
 
 // List prints the registered bookmarks.
 func List(args []string) int {
-	fs := flag.NewFlagSet("list", flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
+	fs := newFlagSet("list", "show registered bookmarks")
 	if _, err := parseArgs(fs, args); err != nil {
-		return 2
+		return flagExitCode(err)
 	}
 
 	st, err := state.Open(config.DBPath())

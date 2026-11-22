@@ -1,7 +1,6 @@
 package commands
 
 import (
-	"flag"
 	"fmt"
 	"os"
 
@@ -11,11 +10,10 @@ import (
 
 // Remove stops syncing a bookmark and keeps the downloaded files.
 func Remove(args []string) int {
-	fs := flag.NewFlagSet("remove", flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
+	fs := newFlagSet("remove", "stop syncing a bookmark, keep downloaded files")
 	pos, err := parseArgs(fs, args)
 	if err != nil {
-		return 2
+		return flagExitCode(err)
 	}
 	if len(pos) != 1 {
 		fmt.Fprintln(os.Stderr, "usage: imgsync remove <id|slug>")

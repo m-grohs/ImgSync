@@ -1,7 +1,6 @@
 package commands
 
 import (
-	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,13 +12,12 @@ import (
 
 // Export writes bookmarks and their assumed chapters to a file or stdout.
 func Export(args []string) int {
-	fs := flag.NewFlagSet("export", flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
-	formatFlag := fs.String("format", formatAuto, "file format: txt, csv or json (default: infer from extension)")
-	out := fs.String("o", "", "write to FILE instead of stdout")
+	fs := newFlagSet("export", "export bookmarks to a file or stdout")
+	formatFlag := fs.String("format", formatAuto, "file format: `txt|csv|json` (default: infer from extension)")
+	out := fs.String("o", "", "write to `FILE` instead of stdout")
 	pos, err := parseArgs(fs, args)
 	if err != nil {
-		return 2
+		return flagExitCode(err)
 	}
 	if len(pos) != 0 {
 		fmt.Fprintln(os.Stderr, "usage: imgsync export [-o FILE] [--format txt|csv|json]")

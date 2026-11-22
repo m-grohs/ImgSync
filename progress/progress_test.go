@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"strings"
 	"testing"
-	"time"
 )
 
 func TestNoProgressEnvParsing(t *testing.T) {
@@ -26,61 +25,38 @@ func TestNoProgressEnvParsing(t *testing.T) {
 	}
 }
 
-func TestFormatDuration(t *testing.T) {
-	cases := []struct {
-		d    time.Duration
-		want string
-	}{
-		{0, "0:00"},
-		{500 * time.Millisecond, "0:01"},
-		{5 * time.Second, "0:05"},
-		{59 * time.Second, "0:59"},
-		{60 * time.Second, "1:00"},
-		{65 * time.Second, "1:05"},
-		{59*time.Minute + 59*time.Second, "59:59"},
-		{time.Hour, "1:00:00"},
-		{time.Hour + 2*time.Minute + 3*time.Second, "1:02:03"},
-	}
-	for _, tc := range cases {
-		if got := formatDuration(tc.d); got != tc.want {
-			t.Errorf("formatDuration(%v) = %q, want %q", tc.d, got, tc.want)
-		}
-	}
-}
-
 func TestBarLine(t *testing.T) {
-	line := barLine("series", "Chapter 005", "pages", 5, 10, 2.5, "0:05")
+	t.Setenv("COLUMNS", "100")
+	line := barLine("series", "Chapter 005", "pages", 5, 10, 2.5, "~5s")
 	for _, want := range []string{
-		"series",
+		"series · Chapter 005",
 		"[████████████░░░░░░░░░░░░]",
 		" 50%",
 		"5/10 pages",
 		"2.5/s",
-		"ETA 0:05",
+		"~5s",
 	} {
 		if !strings.Contains(line, want) {
 			t.Errorf("barLine() = %q, missing %q", line, want)
 		}
 	}
-	if !strings.Contains(line, "Chapter 005") {
-		t.Errorf("barLine() = %q, missing detail", line)
-	}
 }
 
 func TestBarLineLayout(t *testing.T) {
-	index := barLine("Indexing", "", "series", 3, 8, 1.5, "0:04")
+	t.Setenv("COLUMNS", "100")
+	index := barLine("Indexing", "", "series", 3, 8, 1.5, "~4s")
 	if !strings.Contains(index, "Indexing  3/8 series  [") {
 		t.Errorf("index line has unexpected layout: %q", index)
 	}
-	chapter := barLine("Blade & Soul", "Chapter 012", "pages", 8, 20, 3.1, "0:04")
-	if !strings.Contains(chapter, "Blade & Soul") || !strings.Contains(chapter, "Chapter 012") {
+	chapter := barLine("Blade & Soul", "Chapter 012", "pages", 8, 20, 3.1, "~4s")
+	if !strings.Contains(chapter, "Blade & Soul · Chapter 012") {
 		t.Errorf("chapter line is missing its labels: %q", chapter)
 	}
 	if strings.Index(chapter, "8/20 pages") > strings.Index(chapter, "[") {
 		t.Errorf("counts should precede the bar: %q", chapter)
 	}
-	indexChapters := barLine("Indexing", "Blade & Soul", "chapters", 12, 137, 1.5, "1:23")
-	if !strings.Contains(indexChapters, "Indexing  Blade & Soul  12/137 chapters  [") {
+	indexChapters := barLine("Indexing", "Blade & Soul", "chapters", 12, 137, 1.5, "~1m 23s")
+	if !strings.Contains(indexChapters, "Indexing · Blade & Soul  12/137 chapters  [") {
 		t.Errorf("chapter-based indexing line has unexpected layout: %q", indexChapters)
 	}
 }
@@ -113,14 +89,15 @@ func TestFinishedBarsStack(t *testing.T) {
 }
 
 func TestBarLineBeforeFirstItem(t *testing.T) {
-	line := barLine("series", "", "pages", 0, 10, 0, "--")
-	for _, want := range []string{"  0%", "0/10 pages", "ETA --"} {
+	t.Setenv("COLUMNS", "100")
+	line := barLine("series", "", "pages", 0, 10, 0, "")
+	for _, want := range []string{"  0%", "0/10 pages"} {
 		if !strings.Contains(line, want) {
 			t.Errorf("barLine() = %q, missing %q", line, want)
 		}
 	}
-	if strings.Contains(line, "/s") {
-		t.Errorf("barLine() = %q, should not show a rate before any progress", line)
+	if strings.Contains(line, "/s") || strings.Contains(line, "ETA") || strings.Contains(line, "~") {
+		t.Errorf("barLine() = %q, should not show a rate or ETA before any progress", line)
 	}
 }
 
@@ -177,5 +154,41 @@ func TestTruncateLabel(t *testing.T) {
 	}
 	if !strings.HasSuffix(got, "…") {
 		t.Errorf("truncateLabel() = %q, want ellipsis suffix", got)
+	}
+}
+
+func TestClearRemovesLine(t *testing.T) {
+	t.Setenv("COLUMNS", "100")
+	var buf bytes.Buffer
+	mu.Lock()
+	wasEnabled, wasOut, wasActive := enabled, out, active
+	enabled, out, active = true, &buf, nil
+	mu.Unlock()
+	t.Cleanup(func() {
+		mu.Lock()
+		enabled, out, active = wasEnabled, wasOut, wasActive
+		mu.Unlock()
+	})
+
+	bar := New("Series", "Chapter 001", "pages", 2)
+	bar.Add(1)
+	bar.Clear()
+	text := strings.ReplaceAll(buf.String(), "\r\x1b[K", "")
+	if strings.Contains(text, "Chapter 001\n") {
+		t.Errorf("Clear() left a finished line behind: %q", text)
+	}
+	mu.Lock()
+	stillActive := active == bar
+	mu.Unlock()
+	if stillActive {
+		t.Error("Clear() did not release the active bar")
+	}
+}
+
+func TestBarLineNarrowTerminal(t *testing.T) {
+	t.Setenv("COLUMNS", "65")
+	line := barLine("A Very Long Series Name", "Chapter 012", "pages", 1, 10, 1.0, "~9s")
+	if runeLen(line) > 65 {
+		t.Errorf("barLine() = %q, length %d, want <= 65", line, runeLen(line))
 	}
 }

@@ -4,7 +4,6 @@ import (
 	"cmp"
 	"crypto/sha256"
 	"encoding/hex"
-	"flag"
 	"fmt"
 	"io"
 	"log/slog"
@@ -26,13 +25,12 @@ type diskPage struct {
 // SetLocation points a bookmark at a filesystem folder, integrates the
 // chapters/pages found there into the database and reports what is missing.
 func SetLocation(args []string) int {
-	fs := flag.NewFlagSet("set-location", flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
+	fs := newFlagSet("set-location", "point a bookmark at its download folder")
 	dryRun := fs.Bool("dry-run", false, "report only, change nothing")
-	assumeThrough := fs.String("assume-synced-through", "", "treat chapters up to N as already downloaded")
+	assumeThrough := fs.String("assume-synced-through", "", "treat chapters up to `N` as already downloaded")
 	pos, err := parseArgs(fs, args)
 	if err != nil {
-		return 2
+		return flagExitCode(err)
 	}
 	if len(pos) != 2 {
 		fmt.Fprintln(os.Stderr, "usage: imgsync set-location <id|slug> <path> [--dry-run] [--assume-synced-through N]")

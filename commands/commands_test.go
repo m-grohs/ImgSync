@@ -2,6 +2,7 @@ package commands
 
 import (
 	"flag"
+	"os"
 	"reflect"
 	"runtime"
 	"strings"
@@ -41,6 +42,42 @@ func TestVersion(t *testing.T) {
 	}
 	if code := Version([]string{"extra"}); code != 2 {
 		t.Fatalf("Version(extra) = %d", code)
+	}
+}
+
+func TestHelpExitCodes(t *testing.T) {
+	devNull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldStderr := os.Stderr
+	os.Stderr = devNull
+	t.Cleanup(func() {
+		os.Stderr = oldStderr
+		_ = devNull.Close()
+	})
+
+	commands := []struct {
+		name string
+		run  func([]string) int
+	}{
+		{"add", Add},
+		{"assume-synced", AssumeSynced},
+		{"export", Export},
+		{"import", Import},
+		{"list", List},
+		{"remove", Remove},
+		{"reset", Reset},
+		{"run", Run},
+		{"set-location", SetLocation},
+		{"set-output", SetOutput},
+		{"unsync", Unsync},
+		{"version", Version},
+	}
+	for _, cmd := range commands {
+		if got := cmd.run([]string{"-h"}); got != 0 {
+			t.Errorf("%s -h = %d, want 0", cmd.name, got)
+		}
 	}
 }
 

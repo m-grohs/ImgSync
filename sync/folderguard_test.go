@@ -204,7 +204,7 @@ func TestSyncAllExistingSeriesFolder(t *testing.T) {
 
 		f := fetch.New()
 		defer f.Close()
-		_, failures, err := SyncAll(t.Context(), f, st, opts)
+		result, err := SyncAll(t.Context(), f, st, opts)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -212,7 +212,7 @@ func TestSyncAllExistingSeriesFolder(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		return failures, string(data)
+		return result.Failures(), string(data)
 	}
 
 	t.Run("non-interactive fails closed", func(t *testing.T) {

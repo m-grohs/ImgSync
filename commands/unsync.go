@@ -1,7 +1,6 @@
 package commands
 
 import (
-	"flag"
 	"fmt"
 	"os"
 
@@ -13,12 +12,11 @@ import (
 // Unsync marks one or all chapters of a bookmark as not synced so the next
 // run downloads them again.
 func Unsync(args []string) int {
-	fs := flag.NewFlagSet("unsync", flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
+	fs := newFlagSet("unsync", "mark chapters as not synced so they download again")
 	dryRun := fs.Bool("dry-run", false, "report only, change nothing")
 	pos, err := parseArgs(fs, args)
 	if err != nil {
-		return 2
+		return flagExitCode(err)
 	}
 	if len(pos) < 1 {
 		fmt.Fprintln(os.Stderr, "usage: imgsync unsync <id|slug> [chapter...] [--dry-run]")

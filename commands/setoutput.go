@@ -1,7 +1,6 @@
 package commands
 
 import (
-	"flag"
 	"fmt"
 	"os"
 
@@ -10,11 +9,10 @@ import (
 
 // SetOutput stores the download folder in config.toml.
 func SetOutput(args []string) int {
-	fs := flag.NewFlagSet("set-output", flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
+	fs := newFlagSet("set-output", "set the folder new chapters download to")
 	pos, err := parseArgs(fs, args)
 	if err != nil {
-		return 2
+		return flagExitCode(err)
 	}
 	if len(pos) != 1 {
 		fmt.Fprintln(os.Stderr, "usage: imgsync set-output <dir>")

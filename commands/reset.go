@@ -3,7 +3,6 @@ package commands
 import (
 	"bufio"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -20,13 +19,12 @@ func Reset(args []string) int {
 }
 
 func reset(args []string, in io.Reader, interactive bool) int {
-	fs := flag.NewFlagSet("reset", flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
+	fs := newFlagSet("reset", "delete all state and start bookmark IDs from 1")
 	yes := fs.Bool("yes", false, "delete the state database without asking")
 	fs.BoolVar(yes, "y", false, "alias for --yes")
 	pos, err := parseArgs(fs, args)
 	if err != nil {
-		return 2
+		return flagExitCode(err)
 	}
 	if len(pos) != 0 {
 		fmt.Fprintln(os.Stderr, "usage: imgsync reset [--yes]")

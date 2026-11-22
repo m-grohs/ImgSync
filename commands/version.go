@@ -11,8 +11,13 @@ import (
 
 // Version prints build information for bug reports.
 func Version(args []string) int {
-	if len(args) != 0 {
-		fmt.Fprintln(os.Stderr, "usage: imgsync version")
+	fs := newFlagSet("version", "print build information")
+	pos, err := parseArgs(fs, args)
+	if err != nil {
+		return flagExitCode(err)
+	}
+	if len(pos) != 0 {
+		fs.Usage()
 		return 2
 	}
 	fmt.Fprintln(os.Stdout, VersionString())

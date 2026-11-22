@@ -2,7 +2,6 @@ package commands
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -16,15 +15,14 @@ import (
 
 // Import adds bookmarks from a txt, csv or json file.
 func Import(args []string) int {
-	fs := flag.NewFlagSet("import", flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
-	formatFlag := fs.String("format", formatAuto, "file format: txt, csv or json (default: infer from extension)")
+	fs := newFlagSet("import", "import bookmarks from a file")
+	formatFlag := fs.String("format", formatAuto, "file format: `txt|csv|json` (default: infer from extension)")
 	dryRun := fs.Bool("dry-run", false, "report changes without writing them")
 	update := fs.Bool("update", false, "apply file fields to bookmarks that already exist")
 	online := fs.Bool("online", false, "fetch titles for new bookmarks from the site")
 	pos, err := parseArgs(fs, args)
 	if err != nil {
-		return 2
+		return flagExitCode(err)
 	}
 	if len(pos) != 1 {
 		fmt.Fprintln(os.Stderr, "usage: imgsync import FILE [--format txt|csv|json] [--dry-run] [--update] [--online]")

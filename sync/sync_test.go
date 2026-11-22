@@ -1,6 +1,8 @@
 package sync
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -479,12 +481,12 @@ func TestSyncAllLimitIsPerBookmark(t *testing.T) {
 	defer f.Close()
 
 	limit := 1
-	totals, failures, err := SyncAll(t.Context(), f, st, Options{Limit: &limit})
+	result, err := SyncAll(t.Context(), f, st, Options{Limit: &limit})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(failures) != 0 || totals.New != 2 {
-		t.Fatalf("totals = %+v, failures = %v", totals, failures)
+	if failures := result.Failures(); len(failures) != 0 || result.Totals.New != 2 {
+		t.Fatalf("totals = %+v, failures = %v", result.Totals, failures)
 	}
 	for _, slug := range []string{"a", "b"} {
 		pages, err := st.PagesForBookmark(slug)
@@ -494,6 +496,50 @@ func TestSyncAllLimitIsPerBookmark(t *testing.T) {
 	}
 	if got := imageRequests.Load(); got != 2 {
 		t.Fatalf("image requests = %d, want 2", got)
+	}
+}
+
+func TestSyncAllReturnsCanceledDuringDownload(t *testing.T) {
+	disableProgress(t)
+	t.Setenv("IMGSYNC_OUTPUT", t.TempDir())
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/series/test"):
+			_, _ = w.Write([]byte(`<a href="/chapter/1">Chapter 1</a>`))
+		case strings.HasPrefix(r.URL.Path, "/chapter/"):
+			_, _ = w.Write([]byte(`<img src="/img/1.png"><img src="/img/2.png"><img src="/img/3.png">`))
+		default:
+			cancel()
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write([]byte("img"))
+		}
+	}))
+	defer srv.Close()
+
+	st, err := state.Open(filepath.Join(t.TempDir(), "state.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if _, err := st.UpsertBookmark("test", "id", srv.URL+"/series/test", "Test"); err != nil {
+		t.Fatal(err)
+	}
+	f := fetch.New()
+	defer f.Close()
+
+	result, err := SyncAll(ctx, f, st, Options{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("SyncAll error = %v, want context.Canceled", err)
+	}
+	if len(result.Bookmarks) != 1 {
+		t.Fatalf("bookmark results = %d, want 1", len(result.Bookmarks))
+	}
+	if result.Bookmarks[0].Err == nil {
+		t.Error("canceled bookmark should retain its error")
 	}
 }
 
@@ -537,8 +583,8 @@ func TestSyncAllIndexesAllSeriesBeforeDownloading(t *testing.T) {
 	f := fetch.New()
 	defer f.Close()
 
-	if _, failures, err := SyncAll(t.Context(), f, st, Options{}); err != nil || len(failures) != 0 {
-		t.Fatalf("SyncAll: failures = %v, err = %v", failures, err)
+	if result, err := SyncAll(t.Context(), f, st, Options{}); err != nil || len(result.Failures()) != 0 {
+		t.Fatalf("SyncAll: failures = %v, err = %v", result.Failures(), err)
 	}
 
 	mu.Lock()

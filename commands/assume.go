@@ -1,7 +1,6 @@
 package commands
 
 import (
-	"flag"
 	"fmt"
 	"os"
 	"strconv"
@@ -13,12 +12,11 @@ import (
 
 // AssumeSynced marks every chapter up to a cutoff as already downloaded.
 func AssumeSynced(args []string) int {
-	fs := flag.NewFlagSet("assume-synced", flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
+	fs := newFlagSet("assume-synced", "trust chapters up to a cutoff as already downloaded")
 	clear := fs.Bool("clear", false, "remove the assumed cutoff")
 	pos, err := parseArgs(fs, args)
 	if err != nil {
-		return 2
+		return flagExitCode(err)
 	}
 	if len(pos) == 0 || (*clear && len(pos) != 1) || (!*clear && len(pos) != 2) {
 		fmt.Fprintln(os.Stderr, "usage: imgsync assume-synced <id|slug> <chapter> | imgsync assume-synced <id|slug> --clear")

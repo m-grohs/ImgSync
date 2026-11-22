@@ -143,9 +143,14 @@ imgsync run --verify                         # conditional GET for db-synced pag
 imgsync run --yes                            # accept existing-folder prompts
 imgsync run --limit 10                       # max 10 new pages per bookmark
 imgsync run --no-progress                    # hide the progress bar
-imgsync run --verbose                        # show per-chapter indexing details
+imgsync run --verbose                        # mirror detailed logs to the terminal
+imgsync run --demo                           # preview the success output, no syncing
+imgsync run --demo=error                     # also: empty, interrupt
 imgsync version                              # build information
 ```
+
+Every command has a styled `-h` / `--help` page that exits successfully.
+`imgsync -h` lists all commands; `imgsync run -h` lists the run flags.
 
 `--limit` applies separately to every bookmark. With `--verify`, all chapter
 pages are still indexed so changed pages can be found, but at most N new images
@@ -166,53 +171,66 @@ slug. Ambiguous prefixes are rejected with the matching slugs.
 
 ## Progress
 
-On interactive terminals `imgsync run` shows live progress bars on stderr.
-Indexing happens in two steps. First every enabled series page is scanned under
-a short-lived bar that counts series:
+On interactive terminals `imgsync run` shows one live bar at a time on stderr.
+Indexing first counts series, then the chapters actually requested; downloads
+then use a single bar per series and change the detail column as chapters
+change. Finished bars are cleared, so no per-chapter history accumulates.
 
 ```
-Indexing  3/8 series  [████████░░░░░░░░░░░░]  37%  1.2/s  ETA 0:04
+Indexing · Blade & Soul  12/137 chapters  [████░░░░░░░░░░░░░░░░░]   8%  2.4/s  ~52s
+The Beginning After the End · Chapter 338  18/58 pages  [██████████░░░░░░░░░░░░]  31%  4.0/s  ~10s
 ```
 
-Then the discovered chapter pages are fetched under one bar that counts the
-chapters actually requested:
+The series name is the bookmark title, falling back to its slug. Chapters
+skipped by `assume-synced` or because they are already up to date are not
+counted, and `--limit` reduces the chapter total accordingly. Bars are disabled
+when stderr is redirected, when `TERM=dumb`, or when `IMGSYNC_NO_PROGRESS=1` is
+set; `--no-progress` turns them off per run.
 
-```
-Indexing  Blade & Soul  12/137 chapters  [████░░░░░░░░░░░░░░░░░]  8%  2.4/s  ETA 0:52
-```
-
-Chapters skipped by `assume-synced` or because they are already up to date are
-not counted. If `--limit` stops a series early, the chapter total is reduced
-accordingly.
-
-Afterwards the chapters are downloaded. Every chapter gets a bar of its own and
-finished lines stay on screen, one below the other:
-
-```
-Blade and Soul  Chapter 011  20/20 pages  [████████████████████████]  100%  4.0/s  ETA 0:00
-Blade and Soul  Chapter 012  12/25 pages  [██████████░░░░░░░░░░░░░]  48%  3.1/s  ETA 0:04
-```
-
-The series name is the bookmark title, falling back to its slug. The ETA is
-based on the work known after indexing, so already-synced pages (which are
-skipped without a request) do not distort it. The bars are disabled
-automatically when stderr is redirected, when `TERM=dumb`, or when
-`IMGSYNC_NO_PROGRESS=1` is set; `--no-progress` turns them off per run.
-
-Per-chapter indexing details are only logged with `imgsync run --verbose` (or
-the global `-v` flag).
+Detailed `slog` records always go to the log file. With `imgsync run --verbose`
+(or the global `-v` flag) they are also mirrored to the terminal above the bar;
+without it the terminal stays quiet until the final summary.
 
 ## Run summary
 
-Each bookmark reports the chapters it downloaded, followed by a total line:
+After the bars are cleared, one styled block reports the outcome. On success:
 
 ```
-msg=synced bookmark=myst-might-mayhem-7ba78ec7 note="+4 chapters (Chapter 122-125), 71 pages, 121 chapters assumed"
-done: +4 chapters (71 pages), 291 pages unchanged, 121 chapters assumed
+✓ Sync complete in 1m 04s — 4 chapters, 71 pages downloaded
+
+  The Beginning After the End · Chapter 338-339, 343-344
+  The Divine Demon's Grand Ascension · Chapter 074
+
+  291 pages unchanged · 807 chapters assumed · 3 bookmarks
+```
+
+When pages fail, the headline changes and only affected series are listed:
+
+```
+✗ Sync finished with 2 problems in 1m 04s
+
+  Red Storm
+    3 pages failed
+  The Beginning After the End
+    HTTP 403 (blocked)
+```
+
+An interrupted run saves the pages already downloaded:
+
+```
+⚠ Interrupted after 42s — progress saved, rerun to continue
+
+  1 chapter, 18 pages downloaded
 ```
 
 "assumed" counts chapters trusted through `assume-synced`; "up to date" counts
-chapters whose pages were already completely in the database.
+chapters whose pages were already completely in the database. Exit codes are
+`0` for success, `1` when problems were reported, and `130` for an interrupt.
+
+`imgsync run --demo` previews these messages without touching the database, the
+network, or downloaded files. It accepts `success` (the default), `empty`,
+`error`, and `interrupt`, and always exits `0`. On a non-interactive terminal
+only the final messages are shown because progress bars are suppressed there.
 
 ## Where files go
 
