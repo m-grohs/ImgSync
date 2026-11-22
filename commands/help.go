@@ -15,9 +15,15 @@ import (
 // newFlagSet builds a flag set with the shared help style used by every
 // subcommand.
 func newFlagSet(name, synopsis string) *flag.FlagSet {
+	return newFlagSetWithUsage(name, synopsis, "")
+}
+
+// newFlagSetWithUsage is like newFlagSet, but replaces the generic "[options]"
+// usage suffix for commands that take positional arguments.
+func newFlagSetWithUsage(name, synopsis, args string) *flag.FlagSet {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	fs.Usage = func() { printUsage(fs.Output(), fs, synopsis) }
+	fs.Usage = func() { printUsage(fs.Output(), fs, synopsis, args) }
 	return fs
 }
 
@@ -35,7 +41,11 @@ type helpRow struct {
 	usage string
 }
 
-func printUsage(w io.Writer, fs *flag.FlagSet, synopsis string) {
+func printUsage(w io.Writer, fs *flag.FlagSet, synopsis string, args ...string) {
+	usageArgs := "[options]"
+	if len(args) > 0 && args[0] != "" {
+		usageArgs = args[0]
+	}
 	st := ui.Style{Enabled: ui.ColorsEnabled(w)}
 	rows := make([]helpRow, 0, 12)
 	fs.VisitAll(func(f *flag.Flag) {
@@ -59,11 +69,7 @@ func printUsage(w io.Writer, fs *flag.FlagSet, synopsis string) {
 	fmt.Fprintf(w, "%s %s %s\n", st.Name("imgsync "+fs.Name()), ui.EmDash, synopsis)
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, st.Bold("Usage"))
-	if len(rows) == 0 {
-		fmt.Fprintf(w, "  imgsync %s\n", fs.Name())
-	} else {
-		fmt.Fprintf(w, "  imgsync %s [options]\n", fs.Name())
-	}
+	fmt.Fprintf(w, "  imgsync %s %s\n", fs.Name(), usageArgs)
 	if len(rows) > 0 {
 		fmt.Fprintln(w)
 		fmt.Fprintln(w, st.Bold("Options"))

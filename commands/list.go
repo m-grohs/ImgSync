@@ -2,56 +2,65 @@ package commands
 
 import (
 	"fmt"
+	"io"
 	"os"
-	"text/tabwriter"
 
 	"imgsync/config"
-	"imgsync/discover"
+	"imgsync/internal/ui"
 	"imgsync/state"
 )
 
-// List prints the registered bookmarks.
+const listSynopsis = "show registered bookmarks, or details for one bookmark"
+
+// List prints the registered bookmarks, or one bookmark's full details.
 func List(args []string) int {
-	fs := newFlagSet("list", "show registered bookmarks")
-	if _, err := parseArgs(fs, args); err != nil {
+	return list(args, os.Stdout)
+}
+
+func list(args []string, out io.Writer) int {
+	fs := newFlagSetWithUsage("list", listSynopsis, "[<id|slug>]")
+	pos, err := parseArgs(fs, args)
+	if err != nil {
 		return flagExitCode(err)
 	}
+	if len(pos) > 1 {
+		fmt.Fprintln(os.Stderr, "error: specify at most one bookmark")
+		fs.Usage()
+		return 2
+	}
 
-	st, err := state.Open(config.DBPath())
+	store, err := state.Open(config.DBPath())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		return 1
 	}
-	defer st.Close()
+	defer store.Close()
 
-	bookmarks, err := st.ListBookmarks()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		return 1
-	}
-	if len(bookmarks) == 0 {
-		fmt.Println("no bookmarks yet - add one: imgsync add <url>")
+	style := ui.Style{Enabled: ui.ColorsEnabled(out)}
+	if len(pos) == 0 {
+		bookmarks, err := store.ListBookmarks()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			return 1
+		}
+		fmt.Fprint(out, renderListSummary(bookmarks, style))
 		return 0
 	}
 
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "ID\tSLUG\tCH\tPAGES\tASSUMED\tLOCATION\tLAST RUN\tTITLE")
-	for _, b := range bookmarks {
-		location := "-"
-		if b.Location != "" {
-			location = b.Location
-		}
-		lastRun := "-"
-		if b.LastRun != "" {
-			lastRun = b.LastRun
-		}
-		assumed := "-"
-		if b.AssumeSyncedThrough != "" {
-			assumed = discover.ChapterLabel(b.AssumeSyncedThrough)
-		}
-		fmt.Fprintf(w, "%d\t%s\t%d\t%d\t%s\t%s\t%s\t%s\n",
-			b.ID, b.Slug, b.Chapters, b.Pages, assumed, location, lastRun, b.Title)
+	bookmark, err := store.ResolveBookmark(pos[0])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
 	}
-	_ = w.Flush()
+	if bookmark == nil {
+		fmt.Fprintf(os.Stderr, "error: unknown bookmark: %s\n", pos[0])
+		return 1
+	}
+	exceptions, err := store.AssumeExceptions(bookmark.Slug)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+	fmt.Fprint(out, renderListDetail(*bookmark, exceptions, style))
 	return 0
 }

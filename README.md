@@ -123,6 +123,7 @@ imgsync export [-o bookmarks.txt]            # export bookmarks + assumptions (t
 imgsync export -o bookmarks.csv              # format inferred from the file extension
 imgsync import bookmarks.txt [--dry-run] [--update] [--online]
 imgsync list
+imgsync list 3                               # show all details for one bookmark
 imgsync set-output ~/Pictures/ImgSync        # folder new chapters download to
 imgsync set-location 3 ~/Pictures/ImgSync    # point a bookmark at its existing folder
 imgsync set-location blade <path>            # unique slug prefix works too
@@ -169,6 +170,44 @@ Wherever a command takes a bookmark, you can use the `ID` shown by
 `imgsync list` (e.g. `3`), a unique slug prefix (e.g. `blade`), or the full
 slug. Ambiguous prefixes are rejected with the matching slugs.
 
+## Listing bookmarks
+
+Plain `imgsync list` stays deliberately short: ID, display name, and the
+assumed-through cutoff. The display name is the site title, falling back to a
+readable slug-derived name (site hash removed, dashes replaced with spaces)
+when no title was stored.
+
+```
+imgsync — registered bookmarks
+
+  #1  The Beginning After the End             assumed through Chapter 344
+  #2  The Divine Demon's Grand Ascension      —
+
+2 bookmarks · 'imgsync list <id>' for details
+```
+
+Pass a bookmark reference to see everything else for that one bookmark:
+
+```
+Bookmark #2 — The Divine Demon's Grand Ascension
+
+  Slug        the-divine-demons-grand-ascension
+  URL         https://asurascans.com/comics/the-divine-demons-grand-ascension-...
+  Series ID   ...
+  Status      ✓ enabled
+  Assumed     Chapter 074
+  Exceptions  Chapter 104, 110-115
+  Chapters    12
+  Pages       291
+  Location    ~/Pictures/ImgSync/The Divine Demon's Grand Ascension
+  Added       2026-11-22T10:04:11Z
+  Last run    2026-11-22T11:22:09Z
+  Last result ✓ ok
+```
+
+`imgsync list <id|slug>` accepts the same ID, unique slug prefix, or full slug
+that the other commands accept.
+
 ## Progress
 
 On interactive terminals `imgsync run` shows one live bar at a time on stderr.
@@ -181,8 +220,8 @@ Indexing · Blade & Soul  12/137 chapters  [████░░░░░░░░
 The Beginning After the End · Chapter 338  18/58 pages  [██████████░░░░░░░░░░░░]  31%  4.0/s  ~10s
 ```
 
-The series name is the bookmark title, falling back to its slug. Chapters
-skipped by `assume-synced` or because they are already up to date are not
+The series name is the bookmark title, falling back to a readable slug-derived
+name. Chapters skipped by `assume-synced` or because they are already up to date are not
 counted, and `--limit` reduces the chapter total accordingly. Bars are disabled
 when stderr is redirected, when `TERM=dumb`, or when `IMGSYNC_NO_PROGRESS=1` is
 set; `--no-progress` turns them off per run.

@@ -73,7 +73,7 @@ func usage(w io.Writer) {
 		{"add", "<url...>", "register one or more series URLs"},
 		{"export", "[-o FILE]", "export bookmarks as txt, csv or json"},
 		{"import", "FILE", "import bookmarks from a file"},
-		{"list", "", "show registered bookmarks"},
+		{"list", "[<id|slug>]", "list bookmarks, or show one bookmark's details"},
 		{"remove", "<id|slug>", "stop syncing, keep downloaded files"},
 		{"reset", "[--yes]", "delete all state and restart IDs at 1"},
 		{"set-output", "<dir>", "set the folder new chapters download to"},

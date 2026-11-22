@@ -146,7 +146,7 @@ func seriesName(b state.Bookmark) string {
 	if b.Title != "" {
 		return b.Title
 	}
-	return b.Slug
+	return discover.SeriesFolder(b.Slug)
 }
 
 func problemDetail(item sync.BookmarkResult) string {
