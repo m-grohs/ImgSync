@@ -70,7 +70,7 @@ Use the ID from `imgsync list`, a unique slug prefix, or the full slug wherever
 | `set-output <dir>` | Set the default download folder. |
 | `set-location <ref> <dir>` | Point a bookmark at an existing folder and record the pages already there. |
 | `assume-synced <ref> <chapter>` | Treat chapters up to a cutoff as downloaded. `--clear` removes the cutoff. |
-| `unsync <ref> [chapter|range...]` | Re-download selected chapters; with no chapters, all of them. |
+| `unsync <ref> [chapter\|range...]` | Re-download selected chapters; with no chapters, all of them. |
 | `remove <ref>` | Stop syncing a series. Downloaded files stay. |
 | `export [-o FILE]` | Export bookmarks as txt, csv, or json. |
 | `import FILE` | Import bookmarks; `-` reads stdin. |
