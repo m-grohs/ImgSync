@@ -132,6 +132,10 @@ or below the bookmark's assumed cutoff. Moved or deleted files are not
 re-downloaded. Fully synced chapters are skipped, so `run --verify` is the way to
 recheck them.
 
+Chapters the site marks as locked are reported as `N locked` in the run summary.
+They are not failures: each run retries them, and they download once the site
+makes them available. `run --verbose` logs the chapter and reason.
+
 `reset` deletes the database, losing all bookmarks and sync history. It keeps
 downloaded files, config, and logs. Scripts need `--yes` to skip the prompt. An
 old Python `state.sqlite` at the same path is left alone and causes an error;
