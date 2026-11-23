@@ -19,7 +19,7 @@ func Reset(args []string) int {
 }
 
 func reset(args []string, in io.Reader, interactive bool) int {
-	fs := newFlagSet("reset", "delete all state and start bookmark IDs from 1")
+	fs := newFlagSetWithUsage("reset", "delete all state and start bookmark IDs from 1", "[--yes]")
 	yes := fs.Bool("yes", false, "delete the state database without asking")
 	fs.BoolVar(yes, "y", false, "alias for --yes")
 	pos, err := parseArgs(fs, args)

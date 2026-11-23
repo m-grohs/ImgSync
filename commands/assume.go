@@ -12,7 +12,7 @@ import (
 
 // AssumeSynced marks every chapter up to a cutoff as already downloaded.
 func AssumeSynced(args []string) int {
-	fs := newFlagSet("assume-synced", "trust chapters up to a cutoff as already downloaded")
+	fs := newFlagSetWithUsage("assume-synced", "trust chapters up to a cutoff as already downloaded", "<id|slug> <chapter> | <id|slug> --clear")
 	clear := fs.Bool("clear", false, "remove the assumed cutoff")
 	pos, err := parseArgs(fs, args)
 	if err != nil {

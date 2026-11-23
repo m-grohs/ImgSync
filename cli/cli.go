@@ -72,7 +72,7 @@ func usage(w io.Writer) {
 	rows := []usageRow{
 		{"add", "<url...>", "register one or more series URLs"},
 		{"export", "[-o FILE]", "export bookmarks as txt, csv or json"},
-		{"import", "FILE", "import bookmarks from a file"},
+		{"import", "FILE", "import bookmarks from a file (- reads stdin)"},
 		{"list", "[<id|slug>]", "list bookmarks, or show one bookmark's details"},
 		{"remove", "<id|slug>", "stop syncing, keep downloaded files"},
 		{"reset", "[--yes]", "delete all state and restart IDs at 1"},
@@ -121,5 +121,18 @@ func usage(w io.Writer) {
 	fmt.Fprintf(w, "  %s %s\n", st.Dim(ui.Dot), "Preview the final messages with imgsync run --demo.")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, st.Bold("Global flags"))
-	fmt.Fprintf(w, "  %s  %s\n", st.Bold("-v, --verbose"), "mirror detailed logs to the terminal")
+	globalFlags := []struct{ label, detail string }{
+		{"-h, --help", "show this help; use 'imgsync <command> -h' for command options"},
+		{"-v, --verbose", "mirror detailed logs to the terminal"},
+	}
+	width = 0
+	for _, flag := range globalFlags {
+		if n := utf8.RuneCountInString(flag.label); n > width {
+			width = n
+		}
+	}
+	for _, flag := range globalFlags {
+		fmt.Fprintf(w, "  %s%s  %s\n",
+			st.Bold(flag.label), strings.Repeat(" ", width-utf8.RuneCountInString(flag.label)), flag.detail)
+	}
 }

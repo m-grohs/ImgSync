@@ -12,7 +12,7 @@ import (
 
 // Export writes bookmarks and their assumed chapters to a file or stdout.
 func Export(args []string) int {
-	fs := newFlagSet("export", "export bookmarks to a file or stdout")
+	fs := newFlagSetWithUsage("export", "export bookmarks to a file or stdout", "[-o FILE]")
 	formatFlag := fs.String("format", formatAuto, "file format: `txt|csv|json` (default: infer from extension)")
 	out := fs.String("o", "", "write to `FILE` instead of stdout")
 	pos, err := parseArgs(fs, args)

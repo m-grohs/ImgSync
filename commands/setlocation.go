@@ -25,7 +25,7 @@ type diskPage struct {
 // SetLocation points a bookmark at a filesystem folder, integrates the
 // chapters/pages found there into the database and reports what is missing.
 func SetLocation(args []string) int {
-	fs := newFlagSet("set-location", "point a bookmark at its download folder")
+	fs := newFlagSetWithUsage("set-location", "point a bookmark at its download folder", "<id|slug> <path>")
 	dryRun := fs.Bool("dry-run", false, "report only, change nothing")
 	assumeThrough := fs.String("assume-synced-through", "", "treat chapters up to `N` as already downloaded")
 	pos, err := parseArgs(fs, args)

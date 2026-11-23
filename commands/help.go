@@ -42,10 +42,6 @@ type helpRow struct {
 }
 
 func printUsage(w io.Writer, fs *flag.FlagSet, synopsis string, args ...string) {
-	usageArgs := "[options]"
-	if len(args) > 0 && args[0] != "" {
-		usageArgs = args[0]
-	}
 	st := ui.Style{Enabled: ui.ColorsEnabled(w)}
 	rows := make([]helpRow, 0, 12)
 	fs.VisitAll(func(f *flag.Flag) {
@@ -65,11 +61,23 @@ func printUsage(w io.Writer, fs *flag.FlagSet, synopsis string, args ...string) 
 		rows = append(rows, helpRow{label: label, usage: usage})
 	})
 
+	usageArgs := ""
+	switch {
+	case len(args) > 0 && args[0] != "":
+		usageArgs = args[0]
+	case len(rows) > 0:
+		usageArgs = "[options]"
+	}
+
 	fmt.Fprintln(w)
 	fmt.Fprintf(w, "%s %s %s\n", st.Bold("imgsync "+fs.Name()), ui.EmDash, synopsis)
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, st.Bold("Usage"))
-	fmt.Fprintf(w, "  imgsync %s %s\n", fs.Name(), usageArgs)
+	if usageArgs == "" {
+		fmt.Fprintf(w, "  imgsync %s\n", fs.Name())
+	} else {
+		fmt.Fprintf(w, "  imgsync %s %s\n", fs.Name(), usageArgs)
+	}
 	if len(rows) > 0 {
 		fmt.Fprintln(w)
 		fmt.Fprintln(w, st.Bold("Options"))

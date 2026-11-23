@@ -15,7 +15,7 @@ import (
 
 // Import adds bookmarks from a txt, csv or json file.
 func Import(args []string) int {
-	fs := newFlagSet("import", "import bookmarks from a file")
+	fs := newFlagSetWithUsage("import", "import bookmarks from a file (- reads stdin)", "FILE")
 	formatFlag := fs.String("format", formatAuto, "file format: `txt|csv|json` (default: infer from extension)")
 	dryRun := fs.Bool("dry-run", false, "report changes without writing them")
 	update := fs.Bool("update", false, "apply file fields to bookmarks that already exist")

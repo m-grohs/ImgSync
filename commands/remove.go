@@ -10,7 +10,7 @@ import (
 
 // Remove stops syncing a bookmark and keeps the downloaded files.
 func Remove(args []string) int {
-	fs := newFlagSet("remove", "stop syncing a bookmark, keep downloaded files")
+	fs := newFlagSetWithUsage("remove", "stop syncing a bookmark, keep downloaded files", "<id|slug>")
 	pos, err := parseArgs(fs, args)
 	if err != nil {
 		return flagExitCode(err)

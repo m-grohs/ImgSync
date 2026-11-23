@@ -9,7 +9,7 @@ import (
 
 // SetOutput stores the download folder in config.toml.
 func SetOutput(args []string) int {
-	fs := newFlagSet("set-output", "set the folder new chapters download to")
+	fs := newFlagSetWithUsage("set-output", "set the folder new chapters download to", "<dir>")
 	pos, err := parseArgs(fs, args)
 	if err != nil {
 		return flagExitCode(err)

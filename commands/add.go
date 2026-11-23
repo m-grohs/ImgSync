@@ -25,7 +25,7 @@ func (m *multiFlag) Set(v string) error {
 
 // Add registers one or more series URLs as bookmarks.
 func Add(args []string) int {
-	fs := newFlagSet("add", "register one or more series URLs as bookmarks")
+	fs := newFlagSetWithUsage("add", "register one or more series URLs as bookmarks", "<url...>")
 	var files multiFlag
 	fs.Var(&files, "f", "read URLs from `FILE` (one per line)")
 	fs.Var(&files, "file", "read URLs from `FILE` (one per line)")
