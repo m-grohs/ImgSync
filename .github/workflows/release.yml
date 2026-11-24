@@ -76,10 +76,9 @@ jobs:
           VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          # The releases API rejects tag names as --target; it accepts a full
-          # commit SHA. The tag was already checked above, so resolve it here.
-          target_commit="$(git rev-parse "${VERSION}^{commit}")"
+          # The tag already exists (validated above), so the release is tied
+          # to it automatically. Do not pass --target: GITHUB_TOKEN may only
+          # target the run's head commit, and an older tag commit gets a 403.
           gh release create "$VERSION" dist/* \
-            --target "$target_commit" \
             --title "ImgSync $VERSION" \
             --generate-notes
